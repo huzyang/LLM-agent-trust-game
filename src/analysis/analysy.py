@@ -64,7 +64,7 @@ class TrustGameAnalyzer:
         self.df = pd.concat(self.dfs, ignore_index=True)
 
         # 确保数值列类型正确
-        numeric_cols = ['run_id', 'iteration', 'round', 'num_agents', 'proportion', 'agent_id', 'agent_type',
+        numeric_cols = ['run_id', 'iteration', 'round', 'num_agents', 'proportion', 'agent_id',
                         'neighbor_1_id', 'neighbor_2_id', 'neighbor_3_id', 'neighbor_4_id',
                         'sent_to_n1', 'sent_to_n2', 'sent_to_n3', 'sent_to_n4', 'total_sent',
                         'received_return_from_n1', 'received_return_from_n2', 'received_return_from_n3', 'received_return_from_n4', 'total_received_return',

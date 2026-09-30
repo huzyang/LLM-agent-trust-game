@@ -1,4 +1,4 @@
-from params import Params
-from params import ModelType
-from params import GameType
+from .params import Params
+from .params import ModelType
+from .params import GameType
 __all__ = ["Params", "ModelType", "GameType"]

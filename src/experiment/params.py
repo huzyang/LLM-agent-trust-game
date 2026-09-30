@@ -5,7 +5,7 @@ from enum import Enum
 from src.utils import CommonUtils
 from dotenv import load_dotenv
 import os
-from mesa.experimental.scenarios import Scenario
+from dataclasses import dataclass
 
 class ModelType(Enum):
     QWEN3_6_FLASH = "qwen3.6-flash"
@@ -45,7 +45,8 @@ class GameType(Enum):
     TRUST = "trust_game"
 
 
-class GameScenario(Scenario):
+@dataclass
+class GameScenario:
     """Scenario for model."""
     num_agents: int = 9
     width: int = int(num_agents ** 0.5)  # 根号 N
@@ -61,12 +62,11 @@ class GameScenario(Scenario):
 
 class Params:
 
-    def __init__(self):
+    def __init__(self, require_credentials=True):
         self.num_agents = 36
         self.width: int = int(self.num_agents ** 0.5)  # 根号 N
         self.height: int = self.width
-        self.proportions = [0.5, 0.75, 1]  # 自由节点比例 0, 0.25, 0.5, 0.75, 1
-        self.model_type_list = [ModelType.DEEPSEEK_V_4_FLASH.value]
+        self.proportions = [0, 0.25, 0.5, 0.75, 1]
         self.game_type = GameType.TRUST.value
         self.rounds = 20  # 游戏轮数
         self.iterations = 1
@@ -74,11 +74,14 @@ class Params:
         self.total_round_info = False
 
         ################# LLM 参数 ####################
-        load_dotenv()
+        load_dotenv(os.path.join(CommonUtils.get_project_root_path(), ".env"))
+        self.model_type_list = [os.getenv("DEEPSEEK_MODEL", ModelType.DEEPSEEK_V_4_FLASH.value)]
         self.api_key = os.getenv("DEEPSEEK_API_KEY")  # QWEN_API_KEY_130, QWEN_API_KEY_131, DEEPSEEK_API_KEY
-        if not self.api_key:
-            raise ValueError("请设置环境变量 QWEN_API_KEY")
-        self.api_base_url = os.getenv("DEEPSEEK_API_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # QWEN_API_BASE_URL, DEEPSEEK_API_BASE_URL
+        if require_credentials and not self.api_key:
+            raise ValueError("请在 .env 或环境变量中设置 DEEPSEEK_API_KEY")
+        self.api_base_url = os.getenv("DEEPSEEK_API_BASE_URL")
+        if require_credentials and not self.api_base_url:
+            raise ValueError("请设置供应商提供的 DEEPSEEK_API_BASE_URL")
         self.temperature = 1.0
         self.max_tokens = 131072 # 65536, 131072
 
@@ -114,4 +117,4 @@ class Params:
 
     def to_dict(self):
         """将参数转换为字典"""
-        return self.__dict__
+        return {key: value for key, value in self.__dict__.items() if key != "api_key"}

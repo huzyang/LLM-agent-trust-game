@@ -1,0 +1,10 @@
+{
+  "num_agents": 9,
+  "proportions": [0.5],
+  "rounds": 1,
+  "iterations": 1,
+  "report_bdi": false,
+  "total_round_info": false,
+  "temperature": 1.0,
+  "max_tokens": 131072
+}

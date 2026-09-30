@@ -14,8 +14,8 @@ from camel.types.enums import RoleType
 
 import mesa
 from mesa.discrete_space import OrthogonalVonNeumannGrid
-from agents import BaseAgent
-from params import Params, GameScenario
+from .agents import BaseAgent
+from .params import Params, GameScenario
 from src.utils import CommonUtils
 
 logger = logging.getLogger('experiment')
@@ -54,14 +54,15 @@ class GameModel(mesa.Model):
     def __init__(
             self,
             scenario: GameScenario = GameScenario,
+            params: Params = None,
     ):
         """
 
         """
-        super().__init__(scenario=scenario)
+        super().__init__()
 
         # 初始化model
-        self.params = Params()
+        self.params = params if params is not None else Params()
         self.num_agents = scenario.num_agents
         self.height = scenario.height
         self.width = scenario.width
@@ -749,4 +750,3 @@ class GameModel(mesa.Model):
     def reset_record(self):
         """重置记录"""
         pass
-

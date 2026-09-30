@@ -9,12 +9,8 @@ import tqdm
 import pandas as pd
 from datetime import datetime
 from src.experiment.params import Params
-from src.experiment.model import GameModel, GameScenario
-from src.experiment.analysy import TrustGameAnalyzer
+from src.experiment.params import GameScenario
 from src.utils import CommonUtils
-
-# 添加当前目录到路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 logger = logging.getLogger('experiment')
 logger.setLevel(logging.INFO)
@@ -23,6 +19,7 @@ logger.setLevel(logging.INFO)
 def setup_logging(params: Params, timestamp: str):
     """设置日志输出到文件和控制台"""
     output_dir = os.path.join(CommonUtils.get_project_root_path(), "outputs")
+    os.makedirs(output_dir, exist_ok=True)
     log_file = os.path.join(output_dir, f"{timestamp}_run.log")
 
     if logger.handlers:
@@ -86,6 +83,7 @@ def analyze_experiment_results(output_dir: str):
     logger.info(f"找到 {len(csv_files)} 个CSV文件")
 
     try:
+        from src.analysis.analysy import TrustGameAnalyzer
         # 创建分析器
         analyzer = TrustGameAnalyzer(csv_files)
 
@@ -115,6 +113,8 @@ def multi_round_exp(params: Params, timestamp: str):
         exp_time: 每个模型要重复实验的次数
         round_num_inform: 是否在输出中显示轮次信息
     """
+
+    from src.experiment.model import GameModel
 
     model_type_list = params.model_type_list
     iterations = params.iterations
@@ -168,7 +168,7 @@ def multi_round_exp(params: Params, timestamp: str):
                         iteration=iteration
                     )
                     # 传入GameModel
-                    game_model = GameModel(scenario=scenario)
+                    game_model = GameModel(scenario=scenario, params=params)
                     results, pair_game_result, all_dialogue = game_model.run_model(params.rounds)
 
                     # 将每次运行的结果列表扩展到总结果中
@@ -217,11 +217,46 @@ def multi_round_exp(params: Params, timestamp: str):
 
 
 def main():
+    import argparse
     import time
+    parser = argparse.ArgumentParser(description="Run LLM trust-game experiments (requires API credit).")
+    parser.add_argument("--config", type=str, help="JSON experiment configuration")
+    parser.add_argument("--dry-run", action="store_true", help="Validate configuration without API calls")
+    args = parser.parse_args()
     start_time = time.time()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    params = Params()
+    params = Params(require_credentials=not args.dry_run)
+    if args.config:
+        with open(args.config, encoding="utf-8") as handle:
+            config = json.load(handle)
+        allowed = {"num_agents", "proportions", "model_type_list", "rounds", "iterations",
+                   "report_bdi", "total_round_info", "temperature", "max_tokens"}
+        unknown = set(config) - allowed
+        if unknown:
+            parser.error(f"Unknown configuration keys: {sorted(unknown)}")
+        for key, value in config.items():
+            setattr(params, key, value)
+    if not isinstance(params.num_agents, int) or params.num_agents < 9:
+        parser.error("num_agents must be a square integer >= 9")
+    params.width = params.height = int(params.num_agents ** 0.5)
+    if params.width ** 2 != params.num_agents:
+        parser.error("num_agents must be a perfect square")
+    for key in ("rounds", "iterations", "max_tokens"):
+        if not isinstance(getattr(params, key), int) or getattr(params, key) < 1:
+            parser.error(f"{key} must be a positive integer")
+    if not params.proportions or any(not isinstance(p, (int, float)) or not 0 <= p <= 1 for p in params.proportions):
+        parser.error("proportions must be a nonempty list with values in [0, 1]")
+    if not params.model_type_list or any(not isinstance(m, str) or not m for m in params.model_type_list):
+        parser.error("model_type_list must contain model names")
+    if args.dry_run:
+        print(json.dumps(params.to_dict(), ensure_ascii=False, indent=2))
+        calls = 2 * params.num_agents * params.rounds * len(params.proportions) * params.iterations * len(params.model_type_list)
+        print(f"Planned agent-stage calls (excluding retries): {calls}")
+        print("Configuration check only: no model construction or API request.")
+        return
     setup_logging(params, timestamp)
+    with open(os.path.join(CommonUtils.get_project_root_path(), "outputs", f"{timestamp}_config.json"), "w", encoding="utf-8") as handle:
+        json.dump(params.to_dict(), handle, ensure_ascii=False, indent=2)
 
     multi_round_exp(params=params, timestamp=timestamp)
 
