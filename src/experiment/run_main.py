@@ -8,6 +8,13 @@ import logging
 import tqdm
 import pandas as pd
 from datetime import datetime
+
+# Support both ``python -m src.experiment.run_main`` and IDE/direct-file runs.
+if __package__ in (None, ""):
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
 from src.experiment.params import Params
 from src.experiment.params import GameScenario
 from src.utils import CommonUtils
@@ -18,6 +25,14 @@ logger.setLevel(logging.INFO)
 
 def setup_logging(params: Params, timestamp: str):
     """设置日志输出到文件和控制台"""
+    # Windows terminals commonly default to GBK, while the log messages use
+    # symbols and emoji that GBK cannot encode. Keep console logging usable
+    # without requiring callers to set PYTHONUTF8 themselves.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
     output_dir = os.path.join(CommonUtils.get_project_root_path(), "outputs")
     os.makedirs(output_dir, exist_ok=True)
     log_file = os.path.join(output_dir, f"{timestamp}_run.log")
@@ -121,7 +136,7 @@ def multi_round_exp(params: Params, timestamp: str):
     proportions = params.proportions
     total_iterations = len(model_type_list) * len(proportions) * iterations
 
-    logger.info(f"\n{'#' * 80}")
+    logger.info(f"{'#' * 80}")
     logger.info(f"# {'实验配置概览':^76} #")
     logger.info(f"{'#' * 80}")
     logger.info(f"  • 模型列表: {[m.value if hasattr(m, 'value') else str(m) for m in model_type_list]}")
@@ -138,9 +153,6 @@ def multi_round_exp(params: Params, timestamp: str):
     with tqdm.tqdm(total=total_iterations, desc="Overall Progress") as pbar:
         for model_type in model_type_list:
             model_name = model_type.value if hasattr(model_type, 'value') else str(model_type)
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"🔬 开始测试模型: {model_name}")
-            logger.info(f"{'=' * 80}")
 
             # 创建输出目录
             output_dir = os.path.join(CommonUtils.get_project_root_path(), "outputs", f"{timestamp}_{model_type}_{params.game_type}")
@@ -149,12 +161,9 @@ def multi_round_exp(params: Params, timestamp: str):
             all_results = []
             all_pair_game_results = []
             for proportion in proportions:
-                logger.info(f"\n📌 自由玩家比例: {proportion:.0%}")
-                logger.info(f"  ├─ 迭代次数: {iterations}")
-                logger.info(f"  └─ 每迭代轮次: {params.rounds}")
 
                 for iteration in range(1, iterations + 1):
-                    logger.info(f"\n  ▶️  迭代 {iteration}/{iterations} (Run ID: {run_id})")
+                    logger.info(f"▶️  迭代 {iteration}/{iterations} (Run ID: {run_id})")
 
                     # 根据参数值构造GameScenario
                     scenario = GameScenario(

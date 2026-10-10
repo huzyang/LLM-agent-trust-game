@@ -6,6 +6,18 @@ import sys
 import logging
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.utils import CommonUtils
+
+# Keep tiktoken's one-time encoding download in a stable, project-local cache.
+os.environ.setdefault(
+    "TIKTOKEN_CACHE_DIR",
+    os.path.join(CommonUtils.get_project_root_path(), ".cache", "tiktoken"),
+)
+
+from src.experiment.camel_compat import prepare_camel_imports
+
+prepare_camel_imports()
+
 from camel.models import ModelFactory
 from camel.types import ModelPlatformType
 from camel.agents import ChatAgent
@@ -16,7 +28,6 @@ import mesa
 from mesa.discrete_space import OrthogonalVonNeumannGrid
 from .agents import BaseAgent
 from .params import Params, GameScenario
-from src.utils import CommonUtils
 
 logger = logging.getLogger('experiment')
 if not logger.handlers:
@@ -34,7 +45,7 @@ with open(os.path.join(CommonUtils.get_project_root_path(), "src/prompts/all_pro
     exp_prompts = json.load(f)
 
 p_characters = exp_prompts.get("Character", [])
-# random.shuffle(p_characters)
+random.shuffle(p_characters)
 p_characters_student = exp_prompts.get("Character_student", [])
 p_like_people = exp_prompts.get("Like-people", "")
 p_experiment_info = exp_prompts.get("Experiment_context", "")
@@ -212,7 +223,7 @@ class GameModel(mesa.Model):
 
     def role_stage(self, player_type="investor"):
 
-        logger.info(f"\n{'=' * 60}")
+        logger.info(f"{'=' * 60}")
         logger.info(f"📊 实验共{self.params.rounds}轮，第 {self.step} 轮博弈 - {player_type} 阶段开始")
         logger.info(f"{'=' * 60}")
 
@@ -276,12 +287,12 @@ class GameModel(mesa.Model):
                 reasoning_str = str(focal_agent_response.reasoning_content) if hasattr(focal_agent_response, 'reasoning_content') else ""
 
             if player_type == "investor":
-                logger.info(f"📝 investor agent_{focal_agent.unique_id} 的决策为: {send_amounts}")
+                logger.info(f"📝 investor agent_{focal_agent.unique_id}_{focal_agent.type_restriction} 的决策为: {send_amounts}")
                 focal_agent.invested_amounts.append(send_amounts)
                 self.agents_invested_amounts[round_key][agent_key] = send_amounts
 
             elif player_type == "trustee":
-                logger.info(f"📝 trustee agent_{focal_agent.unique_id} 的决策为: {send_amounts}")
+                logger.info(f"📝 trustee agent_{focal_agent.unique_id}_{focal_agent.type_restriction} 的决策为: {send_amounts}")
                 focal_agent.returned_to_neighbors.append(send_amounts)
                 self.agents_returned_amounts[round_key][agent_key] = send_amounts
 
@@ -291,7 +302,7 @@ class GameModel(mesa.Model):
                 "reasoning_content": reasoning_str
             }
 
-        logger.info(f"✅ 实验共{self.params.rounds}轮，第 {self.step} 轮-{player_type} 阶段完成！\n")
+        logger.info(f"✅ 实验共{self.params.rounds}轮，第 {self.step} 轮博弈 - {player_type} 阶段完成！\n")
 
     def prepare_prompt(self, agent, player_type, additional_info="") -> str:
 

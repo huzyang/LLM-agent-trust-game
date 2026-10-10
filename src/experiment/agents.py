@@ -1,5 +1,9 @@
 import random
 from typing import Optional
+from src.experiment.camel_compat import prepare_camel_imports
+
+prepare_camel_imports()
+
 from camel.agents import ChatAgent
 from mesa.discrete_space import CellAgent
 
