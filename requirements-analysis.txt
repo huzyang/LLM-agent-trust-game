@@ -1,0 +1,4 @@
+# Offline NHB workbook and legacy analysis/plotting dependencies.
+-r requirements-offline.txt
+seaborn==0.13.2
+scikit-learn==1.7.2

@@ -61,17 +61,15 @@
   },
   "Individual_goal": " Your goal is to maximize your cumulative payoff over the entire experiment.",
   "Gameplay_rule": {
-    "trust_game": "\n# Gameplay rules\nNetwork Structure: You are positioned on a {width}×{height} 2D lattice with 4 fixed neighbors, assigned a ID number and randomly assigned as Constrained Player or Free Player.\nEndowment: 5 tokens are provided at the beginning of each round.\nStage 1 (Trustor):\nConstrained Players: Must send the same token amount to all four neighbors.\nFree Players: Can send differentiated token amounts to each neighbor.\nEntrusted amount: non-negative, max 2 decimal places, total sent ≤ 5 tokens.\nStage 2 (Trustee):\nActual tokens received are triple those sent by neighbors.\nA single return amount is equally distributed to all four neighbors.\nReturned amount: non-negative, max 2 decimal places, total returned  ≤ Total actual received tokens.\nPayoff Calculation:\nTrustor payoff = 5 − Total tokens sent + Total tokens returned by neighbors.\nTrustee payoff = Tripled received tokens − Total tokens returned.\nRound payoff = Trustor payoff + Trustee payoff.",
+    "trust_game": "\n# Gameplay rules\nNetwork Structure: You are positioned on a {width}×{height} 2D lattice with 4 fixed neighbors, assigned a ID number and randomly assigned as Constrained Player or Free Player.\nEndowment: 5 tokens are provided at the beginning of each round.\nStage 1 (Trustor):\nConstrained Players: Must send the same token amount to all four neighbors.\nFree Players: Can send differentiated token amounts to each neighbor.\nEntrusted amount: non-negative, max 2 decimal places, total sent ≤ 5 tokens.\nStage 2 (Trustee):\nActual tokens received are triple those sent by neighbors.\nA single return amount is equally distributed to all four neighbors.\nReturned amount: non-negative, max 2 decimal places, total returned  ≤ Total actual received tokens.\nPayoff Calculation:\nTrustor payoff = 5 + Total tokens returned by neighbors − Total tokens sent. Unsent endowment is not added to accumulated payoff.\nTrustee payoff = Tripled received tokens − Total tokens returned.\nRound payoff = Trustor payoff + Trustee payoff.",
     "pd_game": "\n# Game Rules (per single interaction)\nYou're taking part in a Prisoner's Dilemma game from the economic behavior experiment. "
   },
   "Settings": "\n# Settings\nPlayers are able to observed their neighbor types (Constrained/Free).\nYou: {focal}\nYour 4 fixed neighbors:{n1};{n2};{n3};{n4}",
-
   "Output requirements": {
     "General": "\n# Output Requirements (strict)",
     "BDI": "\n1. Your response must explicitly state and analyze your Belief, Desire, and Intention to justify your reasoning.\n2. At last, report sending or returning amounts in original order as: `{N1_ID:v1, N2_ID:v2, N3_ID:v3, N4_ID:v4}`.",
     "Simple": "\n1. Per round, report sending or returning amounts in original order as: `{N1_ID:v1, N2_ID:v2, N3_ID:v3, N4_ID:v4}`\n2. Directly output the dictionary only, no reasoning, no extra words, no other sentences."
   },
-
   "Decision stages": {
     "investor": "\nNew round begins. Round {step}, stage 1. As a trustor, how many tokens will you send to each neighbor?",
     "trustee": " As a trustee, how many tokens will you return to neighbors (The returning amounts will be equally distributed to four neighbors)?"

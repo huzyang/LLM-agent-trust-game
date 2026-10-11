@@ -1,268 +1,311 @@
-"""
-主运行脚本
-"""
+"""Run or resume checkpointed trust-game experiments from the project root."""
+import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
+import hashlib
 import json
-import os
-import sys
 import logging
-import tqdm
-import pandas as pd
-from datetime import datetime
-from src.experiment.params import Params
-from src.experiment.params import GameScenario
+from pathlib import Path
+import re
+import sys
+
+# Both "python -m src.experiment.run_main" and "python src/experiment/run_main.py".
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from src.experiment.llm import ExperimentPaused, MockChat, OpenAIChat
+from src.experiment.model import GameModel, PROMPT_PATH
+from src.experiment.params import Params, GameScenario
+from src.experiment.persistence import atomic_json, session_lock
 from src.utils import CommonUtils
 
-logger = logging.getLogger('experiment')
-logger.setLevel(logging.INFO)
+logger = logging.getLogger("experiment")
+SCHEMA_VERSION = 2
+CORE_FILES = ("agents.py", "decisions.py", "llm.py", "model.py", "params.py", "persistence.py")
+RESUME_OVERRIDES = {"context_limit", "max_tokens", "request_timeout", "max_retries", "retry_delay"}
 
 
-def setup_logging(params: Params, timestamp: str):
-    """设置日志输出到文件和控制台"""
-    output_dir = os.path.join(CommonUtils.get_project_root_path(), "outputs")
-    os.makedirs(output_dir, exist_ok=True)
-    log_file = os.path.join(output_dir, f"{timestamp}_run.log")
+def scrub(value, secret):
+    if isinstance(value, dict):
+        return {k: scrub(v, secret) for k, v in value.items()
+                if str(k).lower() not in {"api_key", "authorization", "access_token", "password"}}
+    if isinstance(value, list):
+        return [scrub(v, secret) for v in value]
+    if isinstance(value, str) and secret:
+        return value.replace(secret, "[REDACTED]")
+    return value
 
-    if logger.handlers:
-        logger.handlers.clear()
 
-    file_handler = logging.FileHandler(log_file, mode="a", encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    file_handler.setFormatter(file_formatter)
+class Redact(logging.Filter):
+    def __init__(self, params):
+        super().__init__()
+        self.params = params
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
-    console_handler.setFormatter(console_formatter)
+    def filter(self, record):
+        record.msg = scrub(record.getMessage(), self.params.api_key)
+        record.args = ()
+        return True
 
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+
+def setup_logging(directory, params):
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
+    for handler in logger.handlers[:]:
+        handler.close()
+        logger.removeHandler(handler)
+    file_handler = logging.FileHandler(Path(directory) / "run.log", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S"))
+    for handler in (file_handler, console):
+        handler.addFilter(Redact(params))
+        logger.addHandler(handler)
+    # SDK transport logs are not useful stage progress and may include request bodies.
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def format_run_time(seconds):
-    """
-    自动将秒数转换为最合适的单位（时、分、秒）
-
-    参数:
-    - seconds: 运行时间（秒）
-
-    返回:
-    - 格式化的时间字符串
-    """
-    if seconds >= 3600:  # 大于等于1小时
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = seconds % 60
-        return f"{hours}小时{minutes}分{secs:.2f}秒"
-    elif seconds >= 60:  # 大于等于1分钟
-        minutes = int(seconds // 60)
-        secs = seconds % 60
-        return f"{minutes}分{secs:.2f}秒"
-    else:  # 小于1分钟
-        return f"{seconds:.2f}秒"
+def fingerprints():
+    # Git may check out CRLF on Windows: normalize line endings for fingerprints.
+    source = "".join((Path(__file__).parent / name).read_text(encoding="utf-8") for name in CORE_FILES).encode("utf-8")
+    return {"engine_sha256": hashlib.sha256(source).hexdigest(),
+            "prompt_sha256": hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest()}
 
 
-def analyze_experiment_results(output_dir: str):
-    """
-    分析实验结果并生成报告和图表
-    """
+def build_scenarios(params):
+    scenarios = []
+    for model in params.model_type_list:
+        for proportion in params.proportions:
+            for iteration in range(1, params.iterations + 1):
+                run_id = len(scenarios) + 1
+                # Stable independent seeds, not Python's process-randomized hash().
+                seed = int.from_bytes(hashlib.sha256(f"{params.seed}:{run_id}".encode()).digest()[:8], "big")
+                scenarios.append(asdict(GameScenario(
+                    num_agents=params.num_agents, width=params.width, height=params.height,
+                    model_type=model, proportion=proportion, run_id=run_id,
+                    iteration=iteration, seed=seed)))
+    return scenarios
 
-    # 查找所有CSV文件
-    pattern = os.path.join(output_dir, "*.csv")
-    import glob
-    csv_files = glob.glob(pattern)
 
-    if not csv_files:
-        logger.warning(f"未找到CSV文件，跳过分析: {output_dir}")
-        return
+def export_run(directory, model, mock):
+    import pandas as pd
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", model.model_type)
+    subdir = Path(directory) / f"run_{model.run_id:03d}_{safe_name}"
+    subdir.mkdir(exist_ok=True)
+    rows, pairs, dialogue = model.run_model()
+    source = "mock" if mock else "llm"
+    pd.DataFrame([{**r, "data_source": source} for r in rows]).to_csv(subdir / "agent_rounds.csv", index=False)
+    # Excel numbers retain only ~15 significant digits; store 64-bit seeds as text.
+    pd.DataFrame([{**r, "seed": str(r["seed"]), "data_source": source} for r in pairs]).to_excel(
+        subdir / "pair_data.xlsx", index=False, sheet_name="sent_returned_amount", engine="openpyxl")
+    atomic_json(subdir / "dialogue.json", {**dialogue, "data_source": source})
+    summary = {
+        "scenario": asdict(model.scenario), "data_source": source,
+        "agent_rows": len(rows), "pair_rows": len(pairs),
+        "accepted_calls": len(model.token_usage), "total_tokens": sum(model.token_usage),
+        "corrected_calls": model.corrected_calls, "parse_failures": model.parse_failures,
+        "actual_free_count": sum(a.type_restriction == "free" for a in model.agents),
+        "actual_proportion": sum(a.type_restriction == "free" for a in model.agents) / model.num_agents,
+        "mean_round_payoff": sum(r["round_payoff"] for r in rows) / len(rows),
+        "history_rounds": model.params.history_rounds,
+        "payoff_convention": "trustor=received_return-sent; trustee=3*received_send-returned",
+    }
+    atomic_json(subdir / "summary.json", summary)
+    return {"directory": subdir.name, "summary": summary}
 
-    logger.info(f"\n{'=' * 60}")
-    logger.info(f"📊 开始分析实验结果...")
-    logger.info(f"{'=' * 60}")
-    logger.info(f"找到 {len(csv_files)} 个CSV文件")
 
+def export_batch(directory, completed):
+    import pandas as pd
+    directory = Path(directory)
+    frames = [pd.read_csv(directory / run["directory"] / "agent_rounds.csv", dtype={"seed": "string"})
+              for run in completed]
+    pair_frames = [pd.read_excel(directory / run["directory"] / "pair_data.xlsx", dtype={"seed": "string"})
+                   for run in completed]
+    pd.concat(frames, ignore_index=True).to_csv(directory / "agent_rounds.csv", index=False)
+    pd.concat(pair_frames, ignore_index=True).to_excel(directory / "pair_data.xlsx", index=False,
+                                                      sheet_name="sent_returned_amount", engine="openpyxl")
+    atomic_json(directory / "summary.json", {
+        "runs": len(completed),
+        "data_source": completed[0]["summary"]["data_source"],
+        "accepted_calls": sum(r["summary"]["accepted_calls"] for r in completed),
+        "total_tokens": sum(r["summary"]["total_tokens"] for r in completed),
+        "corrected_calls": sum(r["summary"]["corrected_calls"] for r in completed),
+        "parse_failures": sum(r["summary"]["parse_failures"] for r in completed),
+    })
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def run_session(directory, params, saved, mock, *, resuming=False):
+    directory = Path(directory)
+    checkpoint_path = directory / "checkpoint.json"
+    with session_lock(directory):
+        if resuming:
+            # Re-read after acquiring the lock so a stale read cannot rewind progress.
+            latest = read_json(checkpoint_path)
+            if latest["status"] == "complete":
+                logger.info("Experiment already complete | %s", directory)
+                return 0
+            saved = latest
+        saved["params"] = params.to_dict()
+        saved["status"] = "running"
+        saved.pop("pause", None)
+        atomic_json(checkpoint_path, saved)
+        atomic_json(directory / "config.json", {"params": params.to_dict(), "mock": mock,
+                    "schema_version": SCHEMA_VERSION, **fingerprints()})
+
+        def event(kind, **details):
+            record = {"time": datetime.now(timezone.utc).isoformat(), "event": kind,
+                      "run_index": saved["scenario_index"], **details}
+            with (directory / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(scrub(record, params.api_key), ensure_ascii=False, allow_nan=False) + "\n")
+                handle.flush()
+
+        def checkpoint(model):
+            saved["current"] = model.to_state()
+            atomic_json(checkpoint_path, saved)
+
+        model = None
+        gateway = None
+        event("session_resume" if resuming else "session_start", mock=mock, params=params.to_dict())
+        logger.info("Trust game | %s | agents=%s rounds=%s proportions=%s repeats=%s",
+                    "MOCK / offline" if mock else "LLM / online",
+                    params.num_agents, params.rounds, params.proportions, params.iterations)
+        logger.info("Models=%s | history=%s | thinking=%s | seed=%s | planned calls=%s (before retries)",
+                    params.model_type_list, params.history_rounds or "full",
+                    params.thinking, params.seed, params.planned_calls)
+        logger.info("Output | %s", directory)
+        try:
+            if not mock:
+                params.load_credentials()
+            for index in range(saved["scenario_index"], len(saved["scenarios"])):
+                saved["scenario_index"] = index
+                scenario = GameScenario(**saved["scenarios"][index])
+                gateway = (MockChat if mock else OpenAIChat)(params, scenario.model_type, event=event)
+                model = GameModel(scenario, params, gateway, checkpoint, event, saved["current"])
+                checkpoint(model)
+                actual_free = sum(a.type_restriction == "free" for a in model.agents)
+                logger.info("Run %s/%s | %s | requested p=%.2f actual=%s/%s | derived seed=%s",
+                            scenario.run_id, len(saved["scenarios"]), scenario.model_type,
+                            scenario.proportion, actual_free, scenario.num_agents, scenario.seed)
+                model.run_model()
+                exported = export_run(directory, model, mock)
+                saved["completed"].append(exported)
+                saved["current"] = None
+                saved["scenario_index"] = index + 1
+                atomic_json(checkpoint_path, saved)
+                gateway.close()
+                gateway = None
+                logger.info("Run %s complete | tokens=%s corrected=%s parse_failed=%s",
+                            scenario.run_id, sum(model.token_usage), model.corrected_calls, model.parse_failures)
+            export_batch(directory, saved["completed"])
+            saved["status"] = "complete"
+            atomic_json(checkpoint_path, saved)
+            event("session_complete")
+            logger.info("Complete | %s/summary.json", directory)
+            return 0
+        except (ExperimentPaused, KeyboardInterrupt, ValueError) as exc:
+            # Disk snapshot is authoritative: no partially-mutated live object.
+            saved = read_json(checkpoint_path)
+            reason = exc.reason if isinstance(exc, ExperimentPaused) else (
+                "user_interrupt" if isinstance(exc, KeyboardInterrupt) else "configuration_error")
+            details = exc.details if isinstance(exc, ExperimentPaused) else (
+                {} if isinstance(exc, KeyboardInterrupt) else {"message": scrub(str(exc), params.api_key)})
+            saved["status"] = "paused"
+            saved["pause"] = {"reason": reason, "details": details}
+            atomic_json(checkpoint_path, saved)
+            event("session_paused", reason=reason, details=details)
+            cursor = saved.get("current") or {}
+            logger.error("Paused | %s | round=%s stage=%s saved=%s/%s",
+                         reason, cursor.get("step", 1), cursor.get("phase", "initialization"),
+                         cursor.get("next_agent", 0), params.num_agents)
+            logger.error('Resume | python -m src.experiment.run_main --resume "%s"', directory)
+            return 2
+        except Exception:
+            # Never convert an implementation/export error into a player's zero action.
+            saved = read_json(checkpoint_path)
+            saved["status"] = "paused"
+            saved["pause"] = {"reason": "internal_or_export_error"}
+            atomic_json(checkpoint_path, saved)
+            logger.exception("Unexpected failure; last accepted decision remains checkpointed")
+            return 2
+        finally:
+            if gateway is not None:
+                gateway.close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="LLM trust game with atomic checkpoints and resume")
+    parser.add_argument("--config", help="JSON settings; on resume only request/context limits may change")
+    parser.add_argument("--dry-run", action="store_true", help="Validate only; no API, no output files")
+    parser.add_argument("--mock", action="store_true", help="Deterministic offline simulation, labelled MOCK")
+    parser.add_argument("--resume", help="Existing output directory or checkpoint.json")
+    parser.add_argument("--output-dir", help="New experiment directory (must not contain previous outputs)")
+    args = parser.parse_args(argv)
+    params = Params(require_credentials=False)
+    saved = None
     try:
-        from src.analysis.analysy import TrustGameAnalyzer
-        # 创建分析器
-        analyzer = TrustGameAnalyzer(csv_files)
-
-        # 创建输出目录
-        figures_dir = os.path.join(output_dir, "figures")
-        report_path = os.path.join(output_dir, "analysis_report.txt")
-
-        # 生成分析报告
-        analyzer.generate_report(report_path)
-        logger.info(f"✅ 分析报告已保存: {report_path}")
-
-        # 生成图表
-        analyzer.plot_figures(figures_dir)
-        logger.info(f"✅ 图表已保存: {figures_dir}")
-
-        logger.info(f"✅ 实验分析完成！\n")
-
-    except Exception as e:
-        logger.error(f"❌ 实验分析失败: {str(e)}", exc_info=True)
-
-
-def multi_round_exp(params: Params, timestamp: str):
-    """
-    执行多轮实验的主函数，针对给定的模型列表进行多轮测试
-    参数:
-        model_list: 要测试的模型或模型列表
-        exp_time: 每个模型要重复实验的次数
-        round_num_inform: 是否在输出中显示轮次信息
-    """
-
-    from src.experiment.model import GameModel
-
-    model_type_list = params.model_type_list
-    iterations = params.iterations
-    proportions = params.proportions
-    total_iterations = len(model_type_list) * len(proportions) * iterations
-
-    logger.info(f"\n{'#' * 80}")
-    logger.info(f"# {'实验配置概览':^76} #")
-    logger.info(f"{'#' * 80}")
-    logger.info(f"  • 模型列表: {[m.value if hasattr(m, 'value') else str(m) for m in model_type_list]}")
-    logger.info(f"  • 博弈类型: {params.game_type}")
-    logger.info(f"  • 智能体数量: {params.num_agents}")
-    logger.info(f"  • 网格大小: {params.width} x {params.height}")
-    logger.info(f"  • 自由玩家比例: {proportions}")
-    logger.info(f"  • 每模型迭代次数: {iterations}")
-    logger.info(f"  • 每实验轮次: {params.rounds}")
-    logger.info(f"  • 总实验次数: {total_iterations}")
-    logger.info(f"{'#' * 80}\n")
-
-    run_id = 1
-    with tqdm.tqdm(total=total_iterations, desc="Overall Progress") as pbar:
-        for model_type in model_type_list:
-            model_name = model_type.value if hasattr(model_type, 'value') else str(model_type)
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"🔬 开始测试模型: {model_name}")
-            logger.info(f"{'=' * 80}")
-
-            # 创建输出目录
-            output_dir = os.path.join(CommonUtils.get_project_root_path(), "outputs", f"{timestamp}_{model_type}_{params.game_type}")
-            os.makedirs(output_dir, exist_ok=True)
-
-            all_results = []
-            all_pair_game_results = []
-            for proportion in proportions:
-                logger.info(f"\n📌 自由玩家比例: {proportion:.0%}")
-                logger.info(f"  ├─ 迭代次数: {iterations}")
-                logger.info(f"  └─ 每迭代轮次: {params.rounds}")
-
-                for iteration in range(1, iterations + 1):
-                    logger.info(f"\n  ▶️  迭代 {iteration}/{iterations} (Run ID: {run_id})")
-
-                    # 根据参数值构造GameScenario
-                    scenario = GameScenario(
-                        num_agents=params.num_agents,
-                        width=params.width,
-                        height=params.height,
-                        model_type=model_type,
-                        game_type=params.game_type,
-                        proportion=proportion,
-                        run_id=run_id,
-                        iteration=iteration
-                    )
-                    # 传入GameModel
-                    game_model = GameModel(scenario=scenario, params=params)
-                    results, pair_game_result, all_dialogue = game_model.run_model(params.rounds)
-
-                    # 将每次运行的结果列表扩展到总结果中
-                    all_results.extend(results)
-                    all_pair_game_results.extend(pair_game_result)
-                    dialogue_file_name = f"{timestamp}_run_id-{run_id}_QA-record_p-{proportion}_iter-{iteration}.json"
-                    dialogue_file_path = os.path.join(output_dir, dialogue_file_name)
-                    try:
-                        with open(dialogue_file_path, 'w', encoding='utf-8') as f:
-                            json.dump(all_dialogue, f, ensure_ascii=False, indent=2)
-                        logger.info(f"  ✅ 对话记录已保存: {dialogue_file_name}")
-                    except Exception as e:
-                        logger.error(f"  ❌ 保存对话记录失败: {dialogue_file_name}, 错误: {str(e)}")
-
-                    pbar.update(1)
-                    pbar.set_postfix({
-                        'model': model_name[:15],
-                        'prop': f"{proportion:.0%}",
-                        'run': run_id,
-                        'iter': iteration
-                    })
-                    run_id += 1
-
-            filename_1 = f"{timestamp}_{params.game_type}_p-{proportions}.csv"
-            filepath_1 = os.path.join(output_dir, filename_1)
-            df1 = pd.DataFrame(all_results)
-            df1.to_csv(filepath_1, index=False, encoding='utf-8')
-
-            filename_2 = f"{timestamp}_{params.game_type}_pair_data.xlsx"
-            filepath_2 = os.path.join(output_dir, filename_2)
-            df2 = pd.DataFrame(all_pair_game_results)
-            df2.to_excel(filepath_2, index=False, sheet_name='sent_returned_amount', engine='openpyxl')
-
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"📊 模型 {model_name} 实验汇总")
-            logger.info(f"{'=' * 80}")
-            logger.info(f"  • 总数据行数: {len(all_results)}")
-            logger.info(f"  • CSV文件: {filename_1}")
-            logger.info(f"  • Excel文件: {filename_2}")
-            logger.info(f"  • 保存路径: {output_dir}")
-            logger.info(f"{'=' * 80}\n")
-
-
-            # 对当前模型的实验结果进行分析
-            # analyze_experiment_results(output_dir)
-
-
-def main():
-    import argparse
-    import time
-    parser = argparse.ArgumentParser(description="Run LLM trust-game experiments (requires API credit).")
-    parser.add_argument("--config", type=str, help="JSON experiment configuration")
-    parser.add_argument("--dry-run", action="store_true", help="Validate configuration without API calls")
-    args = parser.parse_args()
-    start_time = time.time()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    params = Params(require_credentials=not args.dry_run)
-    if args.config:
-        with open(args.config, encoding="utf-8") as handle:
-            config = json.load(handle)
-        allowed = {"num_agents", "proportions", "model_type_list", "rounds", "iterations",
-                   "report_bdi", "total_round_info", "temperature", "max_tokens"}
-        unknown = set(config) - allowed
-        if unknown:
-            parser.error(f"Unknown configuration keys: {sorted(unknown)}")
-        for key, value in config.items():
-            setattr(params, key, value)
-    if not isinstance(params.num_agents, int) or params.num_agents < 9:
-        parser.error("num_agents must be a square integer >= 9")
-    params.width = params.height = int(params.num_agents ** 0.5)
-    if params.width ** 2 != params.num_agents:
-        parser.error("num_agents must be a perfect square")
-    for key in ("rounds", "iterations", "max_tokens"):
-        if not isinstance(getattr(params, key), int) or getattr(params, key) < 1:
-            parser.error(f"{key} must be a positive integer")
-    if not params.proportions or any(not isinstance(p, (int, float)) or not 0 <= p <= 1 for p in params.proportions):
-        parser.error("proportions must be a nonempty list with values in [0, 1]")
-    if not params.model_type_list or any(not isinstance(m, str) or not m for m in params.model_type_list):
-        parser.error("model_type_list must contain model names")
-    if args.dry_run:
-        print(json.dumps(params.to_dict(), ensure_ascii=False, indent=2))
-        calls = 2 * params.num_agents * params.rounds * len(params.proportions) * params.iterations * len(params.model_type_list)
-        print(f"Planned agent-stage calls (excluding retries): {calls}")
-        print("Configuration check only: no model construction or API request.")
-        return
-    setup_logging(params, timestamp)
-    with open(os.path.join(CommonUtils.get_project_root_path(), "outputs", f"{timestamp}_config.json"), "w", encoding="utf-8") as handle:
-        json.dump(params.to_dict(), handle, ensure_ascii=False, indent=2)
-
-    multi_round_exp(params=params, timestamp=timestamp)
-
-    run_time = format_run_time(time.time() - start_time)
-    logger.info(f"✅ 实验所有步骤运行完成，总共耗时: {run_time}")
+        config = read_json(args.config) if args.config else {}
+        if args.resume:
+            if args.output_dir:
+                raise ValueError("--resume and --output-dir cannot be combined")
+            resume_path = Path(args.resume).resolve()
+            directory = resume_path.parent if resume_path.is_file() else resume_path
+            saved = read_json(directory / "checkpoint.json")
+            if saved["schema_version"] != SCHEMA_VERSION:
+                raise ValueError("Unsupported checkpoint version")
+            current_fingerprints = fingerprints()
+            # Accept pre-normalization checkpoints only when the exact current
+            # bytes match their stored hash; actual code changes still fail.
+            legacy_hash = hashlib.sha256(b"".join(
+                (Path(__file__).parent / name).read_bytes() for name in CORE_FILES)).hexdigest()
+            if (saved["prompt_sha256"] != current_fingerprints["prompt_sha256"] or
+                    saved["engine_sha256"] not in (current_fingerprints["engine_sha256"], legacy_hash)):
+                raise ValueError("Engine or prompts changed; use the original code to resume this experiment")
+            params.update({k: v for k, v in saved["params"].items() if k not in ("width", "height")})
+            if set(config) - RESUME_OVERRIDES:
+                raise ValueError(f"Resume may only change: {sorted(RESUME_OVERRIDES)}")
+            if args.mock and not saved["mock"]:
+                raise ValueError("Cannot resume a real experiment as mock")
+            mock = saved["mock"]
+        else:
+            mock = args.mock
+        params.update(config)
+        # Prompt coverage validation even in dry-run, before paying for requests.
+        characters = read_json(PROMPT_PATH)["Character"]
+        if params.num_agents > len(characters):
+            raise ValueError(f"Only {len(characters)} character prompts available")
+        if args.dry_run:
+            print(json.dumps(params.to_dict(), ensure_ascii=False, indent=2))
+            print(f"Planned agent-stage calls (excluding retries): {params.planned_calls}")
+            print("Validation only: no model requests and no output files.")
+            return 0
+        if not saved:
+            suffix = "_mock" if mock else "_llm"
+            directory = Path(args.output_dir).resolve() if args.output_dir else (
+                Path(CommonUtils.get_project_root_path()) / "outputs" /
+                (datetime.now().strftime("%Y%m%d_%H%M%S_%f") + suffix))
+            if directory.exists() and any(directory.iterdir()):
+                raise ValueError("Output directory must be empty; use --resume for existing experiments")
+            directory.mkdir(parents=True, exist_ok=True)
+            saved = {"schema_version": SCHEMA_VERSION, **fingerprints(), "mock": mock,
+                     "params": params.to_dict(), "scenarios": build_scenarios(params),
+                     "scenario_index": 0, "current": None, "completed": [], "status": "new"}
+        setup_logging(directory, params)
+        try:
+            return run_session(directory, params, saved, mock, resuming=bool(args.resume))
+        finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
+    except (ValueError, OSError, KeyError) as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

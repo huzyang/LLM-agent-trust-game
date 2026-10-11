@@ -1,0 +1,5 @@
+# Minimal online experiment dependencies (Python 3.12).
+openai==1.109.1
+python-dotenv==1.2.1
+pandas==2.2.3
+openpyxl==3.1.5
