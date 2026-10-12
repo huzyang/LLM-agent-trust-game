@@ -1,0 +1,7 @@
+# Figure 3: Python 3.10-3.12 x64. Install from the repository root:
+# python -m pip install -r src/analysis/requirements_fig3.txt
+numpy>=1.26,<3
+pandas>=2.2,<4
+scipy>=1.13,<2
+openpyxl>=3.1,<4
+originpro==1.1.15; sys_platform == 'win32'
