@@ -17,6 +17,7 @@ from unittest.mock import patch
 import httpx
 from openai import OpenAI
 from src.experiment.decisions import normalize_decision
+from src.experiment.audit_decisions import audit_file
 from src.experiment.llm import ExperimentPaused, MockChat, OpenAIChat, LLMResponse
 from src.experiment.model import GameModel
 from src.experiment.params import GameScenario, Params
@@ -37,7 +38,10 @@ def tearDownModule():
 
 def params(rounds=1):
     result = Params(require_credentials=False)
+    result.num_agents = 9
+    result.proportions = [0.5]
     result.rounds = rounds
+    result.max_tokens = 512
     result.retry_delay = 0
     result.validate()
     return result
@@ -58,6 +62,46 @@ class CountingMock(MockChat):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_output_examples_use_actual_neighbor_ids(self):
+        p = params()
+        for bdi in (False, True):
+            p.report_bdi = bdi
+            model = GameModel(params=p, gateway=CountingMock(p))
+            for agent in model.agents:
+                self.assertNotRegex(agent.system_prompt, r"N[1-4]_ID")
+                for index, nid in enumerate(agent.neighbor_ids, 1):
+                    self.assertIn(f'"{nid}":v{index}', agent.system_prompt)
+
+    def test_incomplete_reply_pauses_before_action_and_cursor_commit(self):
+        for finish in ("length", "content_filter", "tool_calls"):
+            with self.subTest(finish=finish):
+                p = params()
+                events, snapshots = [], []
+                class Incomplete(CountingMock):
+                    def complete(self, messages, **kwargs):
+                        result = super().complete(messages, **kwargs)
+                        if len(self.calls) == 2:
+                            result.finish_reason = finish
+                            result.response_id = "incomplete-test"
+                        return result
+                gateway = Incomplete(p)
+                model = GameModel(params=p, gateway=gateway,
+                                  checkpoint=lambda m: snapshots.append(json.loads(json.dumps(m.to_state()))),
+                                  event=lambda kind, **details: events.append((kind, details)))
+                with self.assertRaises(ExperimentPaused) as exc:
+                    model.run_model()
+                self.assertEqual(exc.exception.reason, "output_truncated" if finish == "length" else "incomplete_response")
+                self.assertEqual(model.next_agent, 1)
+                self.assertEqual(len(model.token_usage), 1)
+                self.assertEqual(model.get_agent(1).invested_amounts, [])
+                self.assertEqual(exc.exception.details["response_id"], "incomplete-test")
+                self.assertTrue(any(kind == "decision_not_accepted" for kind, _ in events))
+                resumed_gateway = CountingMock(p)
+                resumed = GameModel(params=p, gateway=resumed_gateway, state=snapshots[-1])
+                expected = GameModel(params=p, gateway=CountingMock(p)).run_model()
+                self.assertEqual(resumed.run_model(), expected)
+                self.assertEqual(resumed_gateway.calls[0], (1, "investor", 1))
+
     def test_fixed_torus_seed_and_neighbors(self):
         for side in (3, 6, 7):
             p = params()
@@ -159,6 +203,38 @@ class DecisionTests(unittest.TestCase):
     def norm(self, text, stage="investor", restriction="free", budget=5):
         return normalize_decision(text, self.neighbors, stage, restriction, budget)
 
+    def test_real_archived_bdi_replies(self):
+        cases = json.loads((ROOT / "test/fixtures/bdi_decisions_20261013.json").read_text(encoding="utf-8"))
+        for case in cases:
+            with self.subTest(source=case["source"], stage=case["stage"]):
+                d = normalize_decision(case["content"], case["neighbor_ids"], case["stage"],
+                                       case["restriction"], case["budget"])
+                self.assertFalse(d.parse_failed)
+                self.assertEqual(d.amounts, {int(k): v for k, v in case["expected"].items()})
+
+    def test_aliases_nested_bdi_and_no_unrelated_dictionary(self):
+        d = self.norm('Belief {"risk": 2} Decision {N1_ID:0.1,N2_ID:0.2,N3_ID:0.3,N4_ID:0.4}')
+        self.assertEqual(d.amounts, {1:0.1,2:0.2,3:0.3,4:0.4})
+        self.assertIn("neighbor_alias_resolved", d.corrections)
+        d = self.norm('{"Belief":"test","Decision":{"1_ID":1,"N2_ID":1,"3":1,"4":1},"other":{"risk":5}}')
+        self.assertEqual(d.amounts, {i:1 for i in self.neighbors})
+        self.assertTrue(self.norm('{"risk":5}').parse_failed)
+        self.assertTrue(self.norm('{"999":5}').parse_failed)
+        self.assertTrue(self.norm('{bad1: 5}').parse_failed)
+
+    def test_prose_does_not_infer_hypothetical_historical_or_unfinished_actions(self):
+        for text in ('Belief: I will send 1 token to each neighbor.',
+                     'Intention: If I return 4.0 tokens total, it may help.',
+                     'Intention: I considered 1.0 each, but decided against it.',
+                     'Intention: If I send neighbor 1:1, neighbor 2:1, neighbor 3:1, neighbor 4:1, I risk losses.',
+                     'Intention: I will send 1 token to each neighbor.\nAction: {1:1,2:',
+                     'Belief: Last round {1:1,2:1,3:1,4:1}.\nIntention: Final {1:0.5,2:',
+                     'Intention: Send money to each neighbor.'):
+            with self.subTest(text=text):
+                self.assertTrue(self.norm(text, stage="trustee" if "return" in text else "investor").parse_failed)
+        self.assertEqual(self.norm('Intention: I will send 0 tokens to each neighbor.').amounts, {i:0 for i in self.neighbors})
+        self.assertFalse(self.norm('Intention: I will send 0 tokens to each neighbor.').parse_failed)
+
     def test_budget_scaling_preserves_proportions(self):
         d = self.norm('{1: 6, 2: 3, 3: 1, 4: 0}')
         self.assertEqual(d.amounts, {1:3.0, 2:1.5, 3:0.5, 4:0.0})
@@ -182,6 +258,8 @@ class DecisionTests(unittest.TestCase):
     def test_total_return_and_final_bdi_dictionary(self):
         self.assertEqual(self.norm('{"total_return": 1.03}', stage="trustee",budget=3).amounts,
                          {i:0.25 for i in self.neighbors})
+        for text in ('{Return: 1.03}', '{"RETURN": 1.03}', 'Return: 1.03'):
+            self.assertEqual(self.norm(text, stage="trustee", budget=3).amounts, {i:0.25 for i in self.neighbors})
         self.assertEqual(self.norm('explanation {1: 9} final {1:1,2:1,3:1,4:1}').amounts,
                          {i:1 for i in self.neighbors})
 
@@ -271,6 +349,56 @@ class APITests(unittest.TestCase):
 
 
 class CLITests(unittest.TestCase):
+    def setUp(self):
+        # Tests use a small explicit scenario even when the user's run defaults change.
+        defaults = patch("src.experiment.run_main.Params", side_effect=lambda **_: params())
+        defaults.start()
+        self.addCleanup(defaults.stop)
+
+    def test_truncated_reply_is_archived_and_resume_retries_only_pending_agent(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as temp:
+            out = Path(temp) / "truncated"
+            class Truncated(CountingMock):
+                def complete(self, messages, **kwargs):
+                    response = super().complete(messages, **kwargs)
+                    if len(self.calls) == 2:
+                        response.finish_reason = "length"
+                        response.response_id = "truncated-reply"
+                    return response
+            with patch("src.experiment.run_main.MockChat", side_effect=lambda p, name, **_: Truncated(p)):
+                self.assertEqual(main(["--mock", "--output-dir", str(out)]), 2)
+            saved = json.loads((out / "checkpoint.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["pause"]["reason"], "output_truncated")
+            self.assertEqual(saved["pause"]["details"]["response_id"], "truncated-reply")
+            self.assertEqual(saved["current"]["next_agent"], 1)
+            self.assertTrue(saved["pause"]["details"]["content"])
+            self.assertEqual(main(["--resume", str(out)]), 0)
+            self.assertEqual(json.loads((out / "summary.json").read_text())["accepted_calls"], 18)
+
+    def test_audit_reports_intention_without_rewriting_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "dialogue.json"
+            turn = {"content": "{1_ID:0.5,2_ID:0.5,3_ID:0.5,4_ID:0.5}",
+                    "prompt": "decide", "executed_decision": {str(i):0 for i in (1,2,3,4)},
+                    "parse_failed": True, "finish_reason": "stop"}
+            atomic_json(path, {"dialogs":{"round_1":{"agent_0_free":{"as_investor":turn}}}})
+            before = path.read_bytes()
+            report, issues = audit_file(path)
+            self.assertEqual(report["recovered_complete_failures"], 1)
+            self.assertEqual(issues[0]["candidate_decision"], {i:0.5 for i in (1,2,3,4)})
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_audit_uses_exact_received_budget_instead_of_old_float_prompt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "dialogue.json"
+            turn = {"content": "{1:3.6,2:3.6,3:3.6,4:3.6}",
+                    "prompt": "Neighbors sent: {1:1.2,2:1.2,3:1.2,4:1.2}, you received:14.399999999999999.",
+                    "executed_decision": {str(i):3.6 for i in (1,2,3,4)},
+                    "parse_failed": False, "finish_reason": "stop"}
+            atomic_json(path, {"dialogs":{"round_1":{"agent_0_free":{"as_trustee":turn}}}})
+            report, issues = audit_file(path)
+            self.assertEqual(report["changed_complete_decisions"], 0)
+            self.assertEqual(issues, [])
     def test_legacy_byte_fingerprint_and_changed_source_rejection(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as temp:
             out = Path(temp) / "fingerprint"

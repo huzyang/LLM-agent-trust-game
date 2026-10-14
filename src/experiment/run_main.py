@@ -180,6 +180,8 @@ def run_session(directory, params, saved, mock, *, resuming=False):
                     params.model_type_list, params.history_rounds or "full",
                     params.thinking, params.seed, params.planned_calls)
         logger.info("Output | %s", directory)
+        if params.report_bdi and params.max_tokens <= 512:
+            logger.warning("BDI output limit=%s | replies may truncate; consider max_tokens=2048", params.max_tokens)
         try:
             if not mock:
                 params.load_credentials()
@@ -224,6 +226,8 @@ def run_session(directory, params, saved, mock, *, resuming=False):
             logger.error("Paused | %s | round=%s stage=%s saved=%s/%s",
                          reason, cursor.get("step", 1), cursor.get("phase", "initialization"),
                          cursor.get("next_agent", 0), params.num_agents)
+            if reason == "output_truncated":
+                logger.error("Truncated reply archived; increase max_tokens using --config before resuming")
             logger.error('Resume | python -m src.experiment.run_main --resume "%s"', directory)
             return 2
         except Exception:

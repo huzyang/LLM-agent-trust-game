@@ -38,19 +38,21 @@ The first command validates without API calls or output files. The second genera
 
 | Setting | Default |
 | --- | --- |
-| Players / grid | 9 / 3 × 3 periodic four-neighbor lattice |
-| Free-player fraction / repeats / rounds | 0.5 / 1 / 1 |
+| Players / grid | 49 / 7 × 7 periodic four-neighbor lattice |
+| Free-player fractions / repeats / rounds | [0, 0.25, 0.5, 0.75, 1] / 1 / 20 |
 | Model | deepseek-flash |
-| Thinking / BDI / known total rounds | Disabled / disabled / disabled |
+| Thinking / BDI / known total rounds | Disabled / enabled / disabled |
 | History | Last 3 complete rounds, plus current-round messages |
 | Base seed | 42; independent derived seed for each run |
-| Output / local context budget | 512 tokens / 131,072 |
+| Output / local context budget | 2,048 tokens / 131,072 |
 | Request timeout / retries | 60 seconds / 2 retries after initial attempt |
 | Calls before retries | 18 |
 
-Role counts use floor(N×p): the default has 4 free players out of 9. Both requested and actual proportions are logged. Seeds reproduce role assignment, not remote model responses.
+Role counts use floor(N×p). The current default plans 9,800 calls. Use configs/smoke.json for 9 players, one round, p=0.5, BDI disabled and 18 calls. Both requested and actual proportions are logged. Seeds reproduce role assignment, not remote model responses.
 
 Default thinking is explicitly disabled with DeepSeek's `extra_body={"thinking":{"type":"disabled"}}`. Set `"thinking": true` in JSON to enable it; the corresponding comment is in `src/experiment/llm.py`. For other OpenAI-compatible providers configure `api_base_url`, `api_key_env`, `model_type_list` and provider-specific `extra_body`. Put credentials in environment variables, never JSON.
+
+BDI prompts now use actual neighbor IDs and brief explanations. The parser accepts ID aliases and explicit final action statements. Truncated or otherwise incomplete responses are archived and pause before any action is executed; increase max_tokens via a resume config to retry that pending call. max_tokens includes reasoning output when thinking is enabled. See the [BDI audit and repair](docs/bdi-parser-audit-20261014.md); configs/bdi.json reproduces the 49-player, 20-round, five-fraction setup with the repaired parser and a 2,048 output cap.
 
 ## Resume and logs
 
@@ -84,7 +86,7 @@ The console prints configuration, run/stage progress, retries, pauses and final 
 
 ## Paper protocol and full-size configuration
 
-The human experiment used 49 participants, 50 rounds, five treatments and three independent sessions per treatment. `configs/paper.json` reflects those sizes; `configs/smoke.json` matches the small default.
+The human experiment used 49 participants, 50 rounds, five treatments and three independent sessions per treatment. `configs/paper.json` reflects those sizes; `configs/smoke.json` provides a small smoke test.
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/paper.json --dry-run

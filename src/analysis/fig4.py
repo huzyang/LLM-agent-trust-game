@@ -70,7 +70,7 @@ def prepare(args, out):
     shared.event('read_raw_data')
     human_path = Path(args.human).resolve()
     human_hash = shared.digest(human_path)
-    human, human_fields = shared.load_human(human_path, 50)
+    human, human_fields = shared.load_human(human_path, 50, getattr(args, 'human_cache_dir', None))
     llm, sources, configs, llm_fields = shared.load_llm(args.llm_session, 20)
     shared.validate_records(human, 50)
     shared.validate_records(llm, 20)
@@ -101,6 +101,7 @@ def prepare(args, out):
         'no_operations': ['No smoothing', 'No fitting', 'No convergence assertion',
                           'No outlier removal', 'No fabricated repeats', 'No significance tests'],
         'sources': sources, 'configurations': configs,
+        'human_cache': human.attrs.get('human_cache', {}),
         'column_roles': {'LLM': shared.column_roles(llm_fields, 'LLM'),
                          'Human': shared.column_roles(human_fields, 'Human')},
         'style': {'page_cm': PAGE_CM, 'positions_percent': POSITIONS,
@@ -355,6 +356,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command', choices=['prepare', 'render', 'all'])
     p.add_argument('--human')
+    p.add_argument('--human-cache-dir', help='Reusable human cache; default: repository/human_experiment_datas')
     p.add_argument('--llm-session', action='append')
     p.add_argument('--output-dir')
     p.add_argument('--origin-python')
@@ -394,12 +396,13 @@ def main():
             render(args, out)
     snapshot = out / 'source'
     snapshot.mkdir(exist_ok=True)
-    for name in ['fig4.py', 'fig3.py', 'run_fig4.ps1', 'requirements_fig4.txt', 'README_fig4.md', 'test_fig4_data_contract.py']:
+    for name in ['fig4.py', 'fig3.py', 'human_data_cache.py', 'run_fig4.ps1', 'requirements_fig4.txt', 'README_fig4.md', 'test_fig4_data_contract.py']:
         source = Path(__file__).resolve().parent / name
         if source.exists():
             shutil.copy2(source, snapshot / name)
     shared.write_json(out / 'source_manifest.json', {'main_script': 'fig4.py',
         'fig4_sha256': shared.digest(__file__), 'shared_module_sha256': shared.digest(shared.__file__),
+        'human_cache_module_sha256': shared.digest(Path(__file__).resolve().parent/'human_data_cache.py'),
         'argv': sys.argv, 'created_at': datetime.now().astimezone().isoformat()})
     shared.event('complete', output=str(out))
 

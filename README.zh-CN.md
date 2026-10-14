@@ -27,9 +27,9 @@ python -m venv .venv
 
 也支持直接执行 src/experiment/run_main.py。
 
-默认：9 人、1 轮、目标自由比例 0.5、一次重复、deepseek-flash、关闭思考、不报告 BDI、不告知总轮数、基础随机种子 42。正常调用 18 次，重试另计。角色人数向下取整，实际为 4/9，输出同时记录目标比例和实际比例。
+当前默认：49 人、20 轮、五个目标自由比例 [0,0.25,0.5,0.75,1]、一次重复、deepseek-flash、关闭思考、报告 BDI、不告知总轮数、基础随机种子 42。正常调用 9,800 次，重试另计。角色人数向下取整，输出同时记录目标比例和实际比例。小规模试运行请使用 configs/smoke.json（9 人、1 轮、p=0.5、关闭 BDI，18 次调用）。
 
-默认 max_tokens=512，只用于回答输出；context_limit=131072 是单独的本地上下文上限。保留最近 3 个完整轮次问答，加上当前轮已有消息和始终保留的系统提示；完整对话归档不会删掉。新实验可设置 history_rounds=null 使用完整历史，不自动摘要。
+默认 max_tokens=2048，为 BDI 和最终金额字典留出空间；configs/smoke.json 关闭 BDI，仍使用 512。max_tokens 是输出上限，开启 thinking 时推理输出也计入，应另行调大；context_limit=131072 是单独的本地输入加输出上限。保留最近 3 个完整轮次问答，加上当前轮已有消息和始终保留的系统提示；完整对话归档不会删掉。新实验可设置 history_rounds=null 使用完整历史，不自动摘要。
 
 DeepSeek 请求通过 extra_body 设置 thinking.type=disabled；配置 thinking=true 可开启，llm.py 中有注释。其他 OpenAI 兼容供应商可以配置 api_base_url、api_key_env、model_type_list、extra_body；非 DeepSeek 模型不会自动收到 DeepSeek 专属开关。API Key 只放 .env／环境变量。
 
@@ -42,6 +42,8 @@ DeepSeek 请求通过 extra_body 设置 thinking.type=disabled；配置 thinking
 ```
 
 恢复时跳过已保存的调用，保留角色、种子、阶段与历史，从环境变量重新加载密钥。源码和提示词须与检查点匹配；JSON 仅允许覆盖 context_limit、max_tokens、request_timeout、max_retries、retry_delay。mock／真实模式不能混用。退出码 0 表示完成／验证成功，2 表示暂停／失败。
+
+回复 finish_reason=length 或其他未完成状态时，保存原始回复、usage 和未完成调用的位置后暂停，不执行全零决策。遇到 output_truncated，可新建只含 `{"max_tokens":4096}` 的 JSON，通过 `--resume ... --config ...` 恢复；已保存决策不会重做，当前未接受的调用会重新请求并可能再次计费。
 
 本地上下文估计采用 UTF-8 字节量和输出预留，是偏保守的估计，不等于供应商精确 tokenizer；供应商报上下文超限也会暂停。若在供应商已接受请求但本地尚未保存时强制杀进程，恢复可能需要重发这次不确定请求，无法保证远程计费恰好一次。
 
@@ -61,11 +63,21 @@ DeepSeek 请求通过 extra_body 设置 thinking.type=disabled；配置 thinking
 
 非法决策按已约定政策自动修正，不增加模型调用：超预算按比例缩小，受限投资和所有返还四等分，负数／无效值置零，缺邻居补零，非邻居忽略，向下舍入两位小数。完全无法解析采用全零并标记。记录原始回答、执行金额、原因、解析失败和修正次数，并反馈实际执行金额。
 
+BDI 金额解析支持实际数字 ID、`11_ID`、`N11_ID`，以及完整的 `N1_ID` 至 `N4_ID` 顺序占位键；系统提示改为展示每位玩家的真实邻居 ID。也支持最终决策中明确的逐邻居列表、等额发送和总返还声明，不从 Belief／Desire 或假设方案推断金额。dialogue.json 和 events.jsonl 增加 parse_method，区分字典、明确文字决策与解析失败。
+
+2026-10-13 批次的全量解析审计及历史数据限制见 [BDI 修复记录](docs/bdi-parser-audit-20261014.md)。复跑同规模新实验可使用 configs/bdi.json；修改解析器前的历史检查点不能与新代码混合恢复。
+
+离线审计不会调用 API、覆盖 CSV 或重写历史对话：
+
+```powershell
+.\.venv\Scripts\python.exe -m src.experiment.audit_decisions --input outputs --output-dir outputs/new_decision_audit
+```
+
 交易 A→B 的 returned_amount 现在取 B→A 的返还，修复旧代码取 A→B 返还的方向错误。原有玩家 CSV 字段保留，并加入审计字段。新旧收益与交易口径不同，不能无说明地合并历史结果。
 
 ## 论文规模与验证
 
-configs/smoke.json 对应默认小实验。configs/paper.json 使用人类实验规模：49 人、50 轮、五种比例 [0,0.25,0.5,0.75,1]、每组三次重复，正常需要 **73,500 次调用／模型**，不含重试；本次只运行小实验。
+configs/smoke.json 对应小实验。configs/paper.json 使用人类实验规模：49 人、50 轮、五种比例 [0,0.25,0.5,0.75,1]、每组三次重复，正常需要 **73,500 次调用／模型**，不含重试；该配置关闭 BDI。
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/paper.json --dry-run

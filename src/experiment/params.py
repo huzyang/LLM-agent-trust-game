@@ -43,12 +43,12 @@ class Params:
         self.iterations = 1
         self.game_type = "trust_game"
         self.model_type_list = ["deepseek-flash"]
-        self.report_bdi = False
+        self.report_bdi = True
         self.total_round_info = False
         self.seed = 42
         self.history_rounds = 3  # null means full history, never summarized.
         self.temperature = 1.0
-        self.max_tokens = 512  # Output allowance, separate from context_limit.
+        self.max_tokens = 2048  # Allow BDI + final decision; thinking may need a larger cap.
         self.context_limit = 131072  # Conservative configurable input+output cap.
         self.thinking = False
         self.extra_body = {}

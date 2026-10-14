@@ -7,7 +7,8 @@ param(
     [string]$PythonExecutable = '',
     [string]$OriginPythonExecutable = '',
     [switch]$CheckOnly,
-    [switch]$CloseOrigin
+    [switch]$CloseOrigin,
+    [string]$HumanCacheDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +86,9 @@ if ($Mode -eq 'render') {
     }
     if (-not $HumanWorkbook) {
         $HumanWorkbook = Join-Path $taskWorkingRoot 'ubuntu_files\llm_paper_review\NHB_Experiment Data\2. Trust Game.xlsx'
+        if (-not (Test-Path -LiteralPath $HumanWorkbook -PathType Leaf)) {
+            $HumanWorkbook = Join-Path $taskWorkingRoot 'ubuntu_files\llm_paper_review\返修准备\Zenodo公开材料\experiment_datas\NHB_model_Trust Game_Human_datas.xlsx'
+        }
     }
     if (-not (Test-Path -LiteralPath $HumanWorkbook -PathType Leaf)) { throw "Human workbook not found: $HumanWorkbook" }
     foreach ($taskSession in $LlmSessions) {
@@ -107,5 +111,6 @@ if ($Mode -ne 'render') {
 if ($taskOriginPython -and $taskOriginPython -ne $taskPythonInfo.executable) { $taskArguments += @('--origin-python', $taskOriginPython) }
 if ($OutputDirectory) { $taskArguments += @('--output-dir', $OutputDirectory) }
 if ($CloseOrigin) { $taskArguments += '--close-origin' }
+if ($HumanCacheDirectory) { $taskArguments += @('--human-cache-dir', $HumanCacheDirectory) }
 & $taskPythonInfo.executable @taskArguments
 if ($LASTEXITCODE -ne 0) { throw "Figure 3 pipeline failed with exit code $LASTEXITCODE." }

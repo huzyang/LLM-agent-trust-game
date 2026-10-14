@@ -4,9 +4,9 @@ import json
 import logging
 from pathlib import Path
 import random
-from .agents import BaseAgent
+from .agents import BaseAgent, amount_sum
 from .decisions import normalize_decision
-from .llm import OpenAIChat
+from .llm import ExperimentPaused, OpenAIChat
 from .params import Params, GameScenario
 from .persistence import defer_interrupt
 from src.utils import CommonUtils
@@ -85,6 +85,12 @@ class GameModel:
                        if self.params.total_round_info else p_experiment_info["no_total_round_info"])
             output = p_output_requirements["General"] + p_output_requirements[
                 "BDI" if self.params.report_bdi else "Simple"]
+            for index, nid in enumerate(agent.neighbor_ids, 1):
+                output = output.replace(f"N{index}_ID", f'"{nid}"')
+            output += ("\nUse the actual numeric neighbor IDs shown above as JSON keys. "
+                       "Replace v1, v2, v3, v4 with numeric amounts, never ID placeholders.")
+            if self.params.report_bdi:
+                output += "\nKeep Belief, Desire, and Intention to one or two sentences each; finish with the amount dictionary."
             setting = p_settings.format(focal=agent.id_type,
                                         **{f"n{i+1}": value for i, value in enumerate(neighbors)})
             content = (p_characters[agent.unique_id] + p_like_people + context +
@@ -151,6 +157,15 @@ class GameModel:
             self.event("request_start", round=self.step, stage=player_type, agent_id=i,
                        messages=messages)
             response = self.gateway.complete(messages, agent=agent, round_number=self.step, stage=player_type)
+            if response.finish_reason not in ("", "stop"):
+                details = {"round": self.step, "stage": player_type, "agent_id": i,
+                           "content": response.content, "reasoning_content": response.reasoning_content,
+                           "usage": response.usage, "response_id": response.response_id,
+                           "response_model": response.model, "finish_reason": response.finish_reason,
+                           "max_tokens": self.params.max_tokens}
+                self.event("decision_not_accepted", **details)
+                reason = "output_truncated" if response.finish_reason == "length" else "incomplete_response"
+                raise ExperimentPaused(reason, details)
             budget = 5 if player_type == "investor" else agent.total_received_as_trustee
             decision = normalize_decision(response.content, agent.neighbor_ids, player_type,
                                           agent.type_restriction, budget)
@@ -167,6 +182,7 @@ class GameModel:
                     "reasoning_content": response.reasoning_content,
                     "raw_decisions": decision.raw_decisions, "executed_decision": decision.amounts,
                     "corrections": decision.corrections, "parse_failed": decision.parse_failed,
+                    "parse_method": decision.parse_method,
                     "usage": response.usage, "response_id": response.response_id,
                     "response_model": response.model, "finish_reason": response.finish_reason,
                     "attempts": response.attempts,
@@ -183,7 +199,8 @@ class GameModel:
             self.event("decision_saved", round=self.step, stage=player_type, agent_id=i,
                        content=response.content, raw_decisions=decision.raw_decisions,
                        executed_decision=decision.amounts, corrections=decision.corrections,
-                       parse_failed=decision.parse_failed, response_id=response.response_id)
+                       parse_failed=decision.parse_failed, parse_method=decision.parse_method,
+                       response_id=response.response_id)
             logger.debug("Agent %s | round=%s stage=%s decision=%s corrections=%s",
                          i, self.step, player_type, decision.amounts, decision.corrections)
             if self.num_agents >= 25 and self.next_agent % 10 == 0:
@@ -234,8 +251,8 @@ class GameModel:
 
             elif player_type == "trustee":
                 send_amounts = agent.received_from_neighbors[-1]
-                total_value = sum(send_amounts.values())
-                investor_decision = p_decision.format(step=self.step, send_amounts=send_amounts, total=total_value, received=3 * total_value)
+                total_value = amount_sum(send_amounts.values())
+                investor_decision = p_decision.format(step=self.step, send_amounts=send_amounts, total=total_value, received=agent.total_received_as_trustee)
                 decision_stages = p_decision_stages.get("trustee")
                 prompt = investor_decision + decision_stages + p_end
 
@@ -261,12 +278,12 @@ class GameModel:
 
             elif player_type == "trustee":
                 received_amounts = agent.received_from_neighbors[-1]
-                total_value = sum(received_amounts.values())
+                total_value = amount_sum(received_amounts.values())
                 investor_decision = p_decision.format(
                     step=self.step,
                     send_amounts=received_amounts,
                     total=total_value,
-                    received=3 * total_value
+                    received=agent.total_received_as_trustee
                 )
                 decision_stages = p_decision_stages.get("trustee")
                 prompt = investor_decision + decision_stages + p_end

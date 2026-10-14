@@ -20,6 +20,7 @@ import platform
 import re
 import sys
 import subprocess
+import shutil
 import time
 from datetime import datetime
 from contextlib import contextmanager
@@ -80,7 +81,7 @@ def validate_records(frame, rounds):
             raise ValueError(f'{population}/{session} does not contain all five p conditions')
 
 
-def load_human(path, rounds):
+def _load_human_uncached(path, rounds=None):
     import openpyxl
     book = openpyxl.load_workbook(path, data_only=True, read_only=True)
     selected, fields = [], None
@@ -95,7 +96,7 @@ def load_human(path, rounds):
             idx = {name: i for i, name in enumerate(names)}
             for row in rows:
                 rd = row[idx['subsession.round_number']]
-                if rd is None or not 1 <= int(rd) <= rounds:
+                if rd is None or int(rd) < 1 or (rounds is not None and int(rd) > rounds):
                     continue
                 sent = float(row[idx['player.send_T']])
                 returned = float(row[idx['player.return_T']])
@@ -113,6 +114,15 @@ def load_human(path, rounds):
     if frame.empty:
         raise ValueError('No matching TG worksheets found')
     return frame, fields
+
+
+def load_human(path, rounds, cache_dir=None):
+    """Read validated, reusable human tables; XLSX is parsed only on a cache miss."""
+    if __package__:
+        from .human_data_cache import load_records
+    else:
+        from human_data_cache import load_records
+    return load_records(path, rounds, _load_human_uncached, cache_dir)
 
 
 def load_llm(paths, rounds):
@@ -185,7 +195,7 @@ def prepare(args, out):
     event('read_raw_data')
     human_path = Path(args.human).resolve()
     human_sha = digest(human_path)
-    human, human_fields = load_human(human_path, args.rounds)
+    human, human_fields = load_human(human_path, args.rounds, getattr(args, 'human_cache_dir', None))
     llm, hashes, configs, llm_fields = load_llm(args.llm_session, args.rounds)
     records = pd.concat([llm, human], ignore_index=True)
     validate_records(records, args.rounds)
@@ -247,6 +257,7 @@ def prepare(args, out):
         'display_jitter': 'Deterministic seeded horizontal jitter; Y values unchanged and every point retained',
         'counts': json.loads(counts.to_json(orient='index')),
         'sources': sources, 'configurations': configs,
+        'human_cache': human.attrs.get('human_cache', {}),
         'software': {'python': platform.python_version(), 'pandas': pd.__version__, 'numpy': np.__version__},
         'table_hashes': {name: digest(out / f'{name}.csv') for name in tables}}
     write_json(out / 'analysis_plan.json', plan)
@@ -618,6 +629,7 @@ def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['prepare','render','all'])
     p.add_argument('--human',help='Human original trust-game XLSX')
+    p.add_argument('--human-cache-dir',help='Reusable human cache; default: repository/human_experiment_datas')
     p.add_argument('--llm-session',action='append',help='LLM output directory or aggregate agent_rounds.csv; repeat once per independent experiment')
     p.add_argument('--rounds',type=int,default=20)
     p.add_argument('--output-dir',help='New output folder (prepare/all), existing prepared folder (render)')
@@ -651,7 +663,12 @@ def main():
             subprocess.run(command,check=True)
         else:
             render(args,out)
+    snapshot=out/'source'
+    snapshot.mkdir(exist_ok=True)
+    for name in ['fig3.py','human_data_cache.py']:
+        shutil.copy2(HERE/name,snapshot/name)
     write_json(out/'source_manifest.json',{'fig3.py_sha256':digest(__file__),
+        'human_data_cache.py_sha256':digest(HERE/'human_data_cache.py'),
         'source_path':str(Path(__file__).resolve()),'argv':sys.argv,
         'utc_time':datetime.now().astimezone().isoformat()})
     event('complete',output=str(out))

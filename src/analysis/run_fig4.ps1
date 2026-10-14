@@ -10,7 +10,8 @@ param(
     [switch]$CloseOrigin,
     [switch]$Probe,
     [string]$RouteEvidence = '',
-    [string]$ReferenceDirectory = ''
+    [string]$ReferenceDirectory = '',
+    [string]$HumanCacheDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,6 +117,7 @@ if ($CloseOrigin) { $taskArguments += '--close-origin' }
 if ($Probe) { $taskArguments += '--probe' }
 if ($RouteEvidence) { $taskArguments += @('--route-evidence', $RouteEvidence) }
 if ($ReferenceDirectory) { $taskArguments += @('--reference-dir', $ReferenceDirectory) }
+if ($HumanCacheDirectory) { $taskArguments += @('--human-cache-dir', $HumanCacheDirectory) }
 & $taskPythonInfo.executable @taskArguments
 if ($LASTEXITCODE -ne 0) { throw "Figure 4 pipeline failed with exit code $LASTEXITCODE." }
 
