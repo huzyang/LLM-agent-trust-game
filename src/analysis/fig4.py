@@ -206,7 +206,7 @@ def style_panel(op, graph, layer, index, limits, n_sessions):
     left, top, width, height = POSITIONS[index]
     layer.lt_exec(f'layer.unit=1;layer.left={left};layer.top={top};layer.width={width};layer.height={height};layer.fixed=1;layer.factor=1;layer.maxpts=0;')
     rounds = 20 if population == 'LLM' else 50
-    layer.axis('x').set_limits(0, rounds, 5 if rounds == 20 else 10)
+    layer.axis('x').set_limits(0, rounds + (.8 if rounds == 20 else 1.5), 5 if rounds == 20 else 10)
     layer.axis('y').set_limits(*limits)
     font = int(op.lt_float('font(Arial)'))
     for axis in ['x', 'y']:
@@ -344,8 +344,9 @@ def render(args, out):
                         'rgb': list(plot.color), 'line_width': plot.get_float('line.width'),
                         'transparency': plot.transparency}
                 if role['kind'] == 'mean':
-                    item.update(symbol_kind=plot.symbol_kind, symbol_interior=plot.symbol_interior,
-                                symbol_size=plot.symbol_size)
+                    # Origin 2021 does not expose plotN.symbol.interior readback.
+                    # Verify native scatter type, circle shape and physical size.
+                    item.update(symbol_kind=plot.symbol_kind, symbol_size=plot.symbol_size)
                     if item['pid'] != 201:
                         raise RuntimeError('Mean plot is not native scatter')
                 if role['kind'] == 'sd_upper_fill':

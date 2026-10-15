@@ -46,7 +46,7 @@ def audit(out, visual_reviewed):
         with Image.open(out / f'Fig4.{ext}') as im:
             im.verify()
         with Image.open(out / f'Fig4.{ext}') as im:
-            images[ext] = {'size': list(im.size), 'dpi': list(im.info.get('dpi', ()))}
+            images[ext] = {'size': list(im.size), 'dpi': [float(v) for v in im.info.get('dpi', ())]}
             assert im.width == 4200 and im.height >= 2700
     pdf = (out / 'Fig4.pdf').read_bytes()
     assert pdf.startswith(b'%PDF-') and b'/Font' in pdf
@@ -64,7 +64,7 @@ def audit(out, visual_reviewed):
         assert ('legend' in layer) == (index in [1, 3])
         assert layer['axis_tick_pt'] == [16, 16]
         assert all(t['font'] == layer['axis_font'] for t in layer['texts'].values())
-        assert layer['x_limits'][1] == (20 if index < 2 else 50)
+        assert layer['x_limits'][1] == (20.8 if index < 2 else 51.5)
         if 'legend' in layer:
             left, top, width, height = layer['geometry_percent']
             x, y, w, h = layer['legend']['bounds_page_percent']
