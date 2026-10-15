@@ -2,7 +2,7 @@
 
 ## Input and scope
 
-Input: `src/outputs/2024_NHB_model_Trust Game.xlsx`.
+Input: `human_experiment_datas/2024_NHB_model_Trust Game.xlsx`.
 
 SHA-256 of the workbook inspected for this example:
 
@@ -62,7 +62,7 @@ From the repository root, after installing `requirements-offline.txt`:
 
 ```bash
 python -m src.analysis.nhb_analysis \
-  --input "src/outputs/2024_NHB_model_Trust Game.xlsx" \
+  --input "human_experiment_datas/2024_NHB_model_Trust Game.xlsx" \
   --output-dir outputs/nhb_offline
 ```
 

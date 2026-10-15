@@ -104,7 +104,7 @@ Install `requirements-offline.txt`. No API credentials are needed:
 
 ```bash
 python -m src.analysis.nhb_analysis \
-  --input "src/outputs/2024_NHB_model_Trust Game.xlsx" \
+  --input "human_experiment_datas/2024_NHB_model_Trust Game.xlsx" \
   --output-dir outputs/nhb_offline
 ```
 

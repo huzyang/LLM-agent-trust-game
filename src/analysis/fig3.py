@@ -34,6 +34,7 @@ HUMAN_COLORS = ['#F25A20', '#BA4A31', '#843B37', '#5C2E39', '#372334']
 PANELS = [('LLM', 'entrusted'), ('Human', 'entrusted'),
           ('LLM', 'returned'), ('Human', 'returned')]
 HERE = Path(__file__).resolve().parent
+DEFAULT_HUMAN_WORKBOOK = (HERE.parent.parent if HERE.parent.name == 'src' else HERE) / 'human_experiment_datas' / '2024_NHB_model_Trust Game.xlsx'
 
 
 def box_fill_color(color):
@@ -129,7 +130,16 @@ def load_llm(paths, rounds):
     frames, hashes, configurations, fields, seen_hashes = [], [], [], None, set()
     for number, input_path in enumerate(paths, 1):
         input_path = Path(input_path).resolve()
-        csv_path = input_path / 'agent_rounds.csv' if input_path.is_dir() else input_path
+        if input_path.is_dir():
+            candidates = [input_path/name for name in ['agent_rounds_all.csv', 'agent_rounds.csv']
+                          if (input_path/name).is_file()]
+            if not candidates:
+                raise FileNotFoundError(f'No aggregate agent_rounds_all.csv or agent_rounds.csv in {input_path}')
+            if len(candidates) > 1 and digest(candidates[0]) != digest(candidates[1]):
+                raise ValueError('Two different aggregate LLM CSVs present; supply the intended CSV explicitly')
+            csv_path = candidates[0]
+        else:
+            csv_path = input_path
         sha = digest(csv_path)
         if sha in seen_hashes:
             raise ValueError('Same LLM CSV supplied more than once')
@@ -628,7 +638,7 @@ def render(args, out):
 def parser():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['prepare','render','all'])
-    p.add_argument('--human',help='Human original trust-game XLSX')
+    p.add_argument('--human',default=str(DEFAULT_HUMAN_WORKBOOK),help='Human trust-game XLSX; default: human_experiment_datas/2024_NHB_model_Trust Game.xlsx')
     p.add_argument('--human-cache-dir',help='Reusable human cache; default: repository/human_experiment_datas')
     p.add_argument('--llm-session',action='append',help='LLM output directory or aggregate agent_rounds.csv; repeat once per independent experiment')
     p.add_argument('--rounds',type=int,default=20)

@@ -16,7 +16,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $taskRepository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-$taskWorkingRoot = Split-Path (Split-Path $taskRepository -Parent) -Parent
 
 function Get-Fig4PythonInfo {
     param([string]$Candidate)
@@ -88,15 +87,15 @@ if ($Mode -eq 'render') {
         $LlmSessions = @((Join-Path $taskRepository 'outputs\20261011_000304_540158_llm_01'))
     }
     if (-not $HumanWorkbook) {
-        $HumanWorkbook = Join-Path $taskWorkingRoot 'ubuntu_files\llm_paper_review\NHB_Experiment Data\2. Trust Game.xlsx'
-        if (-not (Test-Path -LiteralPath $HumanWorkbook -PathType Leaf)) {
-            $HumanWorkbook = Join-Path $taskWorkingRoot 'ubuntu_files\llm_paper_review\返修准备\Zenodo公开材料\experiment_datas\NHB_model_Trust Game_Human_datas.xlsx'
-        }
+        $HumanWorkbook = Join-Path $taskRepository 'human_experiment_datas\2024_NHB_model_Trust Game.xlsx'
     }
     if (-not (Test-Path -LiteralPath $HumanWorkbook -PathType Leaf)) { throw "Human workbook not found: $HumanWorkbook" }
     foreach ($taskSession in $LlmSessions) {
         $taskCsv = $taskSession
-        if (Test-Path -LiteralPath $taskSession -PathType Container) { $taskCsv = Join-Path $taskSession 'agent_rounds.csv' }
+        if (Test-Path -LiteralPath $taskSession -PathType Container) {
+            $taskCsv = Join-Path $taskSession 'agent_rounds_all.csv'
+            if (-not (Test-Path -LiteralPath $taskCsv -PathType Leaf)) { $taskCsv = Join-Path $taskSession 'agent_rounds.csv' }
+        }
         if (-not (Test-Path -LiteralPath $taskCsv -PathType Leaf)) { throw "LLM CSV not found: $taskCsv" }
     }
 }

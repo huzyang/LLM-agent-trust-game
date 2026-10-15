@@ -2,6 +2,8 @@
 
 Fig. 3 和 Fig. 4 共用此目录。主入口：`src/analysis/human_data_cache.py`。
 
+信任博弈人类原始数据：`human_experiment_datas/2024_NHB_model_Trust Game.xlsx`（相对于项目根目录）。Fig. 3、Fig. 4 的 Python 和 PowerShell 入口及 `nhb_analysis.py` 均以此为默认路径；可传入参数指定其他工作簿。
+
 每份工作簿按原始文件 SHA256 和处理代码版本建立独立子目录。原始数据变化或处理规则变化会生成新目录，旧版本保留。每个目录存放完整、清洗过的逐人逐轮记录，以及 `rounds_20`、`rounds_50` 等窗口的表格。
 
 每个窗口提供：
@@ -22,7 +24,7 @@ Fig. 3 和 Fig. 4 共用此目录。主入口：`src/analysis/human_data_cache.p
 提前准备默认 20、50 轮数据：
 
 ```powershell
-python -m src.analysis.human_data_cache --human '人类原始工作簿.xlsx'
+python -m src.analysis.human_data_cache --human 'human_experiment_datas/2024_NHB_model_Trust Game.xlsx'
 ```
 
 其他窗口通过 `--rounds 10 30` 请求；若清洗记录中有这些轮次就自动补齐。不能生成超出原始数据的轮次。路径可用 Python 的 `--human-cache-dir` 或 PowerShell 的 `-HumanCacheDirectory` 覆盖。

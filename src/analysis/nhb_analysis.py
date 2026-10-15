@@ -117,7 +117,7 @@ def analyze(path, output):
 def main():
     root = Path(CommonUtils.get_project_root_path())
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=root / "src/outputs/2024_NHB_model_Trust Game.xlsx")
+    parser.add_argument("--input", type=Path, default=root / "human_experiment_datas/2024_NHB_model_Trust Game.xlsx")
     parser.add_argument("--output-dir", type=Path, default=root / "outputs/nhb_offline")
     args = parser.parse_args()
     analyze(args.input, args.output_dir)

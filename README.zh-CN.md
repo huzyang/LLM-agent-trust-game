@@ -91,7 +91,7 @@ configs/smoke.json 对应小实验。configs/paper.json 使用人类实验规模
 安装 requirements-offline.txt，无需 API Key：
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.analysis.nhb_analysis --input "src/outputs/2024_NHB_model_Trust Game.xlsx" --output-dir outputs/nhb_offline
+.\.venv\Scripts\python.exe -m src.analysis.nhb_analysis --input "human_experiment_datas/2024_NHB_model_Trust Game.xlsx" --output-dir outputs/nhb_offline
 ```
 
 原始工作簿五种比例、每种三次 session、每次 49 人 50 轮，共 36,750 条玩家记录和 147,000 条方向金额记录。不处理参与者信息表，不改原文件，不跨 session 按玩家编号配对。先计算 session 每轮均值，再等权平均三次 session；负累计收益组的常规 Gini 标为未定义。

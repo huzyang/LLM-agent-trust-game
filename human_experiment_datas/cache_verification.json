@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "source_sha256": "daed227ca2702476e201b8b79e020e0dfcb374ae64b322350ddea28ae79e9a09",
+  "windows": {
+    "20": {
+      "first_load_seconds": 12.404555299988715,
+      "cached_load_seconds": 0.08309400000143796,
+      "first_status": "source_processed",
+      "records": 14700,
+      "table_path": "E:\\huzy_work\\DevLearningCode\\LLM-agent-trust-game\\human_experiment_datas\\trust_game_daed227ca2702476_b521b26128cf8076\\rounds_20\\selected_round_records.csv"
+    },
+    "50": {
+      "first_load_seconds": 0.8278855000098702,
+      "cached_load_seconds": 0.17418699999689125,
+      "first_status": "tables_prepared",
+      "records": 36750,
+      "table_path": "E:\\huzy_work\\DevLearningCode\\LLM-agent-trust-game\\human_experiment_datas\\trust_game_daed227ca2702476_b521b26128cf8076\\rounds_50\\selected_round_records.csv"
+    }
+  },
+  "checks": {
+    "20_round_records_match_previous_figure_exactly": true,
+    "20_round_individual_means_match_previous_figure_exactly": true,
+    "original_origin_50_round_entrusted_max_error": 4.96598318022734e-10,
+    "original_origin_50_round_returned_max_error": 4.965992062011537e-10,
+    "fig3_full_prepare_matches_previous_tables_exactly": true,
+    "fig4_full_prepare_human_mean_sd_matches_cache_exactly": true,
+    "both_figure_preparations_hit_cache": true
+  },
+  "tests_passed": 13,
+  "pipeline_validation_dirs": {
+    "fig3": "E:\\huzy_work\\ubuntu_files\\llm_paper_review\\tmp\\human_cache_validation_20261014\\fig3_tables_v2",
+    "fig4": "E:\\huzy_work\\ubuntu_files\\llm_paper_review\\tmp\\human_cache_validation_20261014\\fig4_tables_v2"
+  },
+  "verified_source_path": "E:\\huzy_work\\DevLearningCode\\LLM-agent-trust-game\\human_experiment_datas\\2024_NHB_model_Trust Game.xlsx",
+  "source_path_update": {
+    "same_source_sha256": true,
+    "fig3_launcher_check": "passed",
+    "fig4_launcher_check": "passed",
+    "rounds_20_cache": "hit",
+    "rounds_50_cache": "hit",
+    "updated_cache_manifests": [
+      "E:\\huzy_work\\DevLearningCode\\LLM-agent-trust-game\\human_experiment_datas\\trust_game_daed227ca2702476_b521b26128cf8076\\source_manifest.json"
+    ]
+  }
+}

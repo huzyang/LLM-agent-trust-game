@@ -1,14 +1,16 @@
 """主脚本 / Main entry point: raw data -> round tables -> editable Origin Figure 4.
 
-LLM: all 20 rounds; Human: all 50 rounds. Within each independent session,
-average the 49 individuals, then equally average session means. Bands are
-sample SD of session means (ddof=1); a single session has no estimated SD.
+LLM: all 20 rounds; Human: all 50 rounds. At each condition and round,
+pool individual amounts across the selected sessions. Scatter shows the mean;
+bands show +/-1 sample SD of individual amounts (ddof=1), not a confidence interval.
 No smoothing, fitting, exclusions, imputation or convergence test.
 Run: python -m src.analysis.fig4 --help; Windows: run_fig4.ps1.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import inspect
 import json
 import math
 from pathlib import Path
@@ -34,20 +36,58 @@ POSITIONS = [(10, 12, 35, 29), (61, 12, 35, 29),
 
 
 def summarise_rounds(records):
-    """Keep the session, rather than individuals or rounds, as replicate unit."""
+    """Describe per-round individual dispersion; do not infer independent repeats."""
     identifiers = ['population', 'session', 'p', 'round']
     sessions = records.groupby(identifiers)[['entrusted', 'returned']].mean().reset_index()
     counts = records.groupby(identifiers).size().rename('n_individuals').reset_index()
     sessions = sessions.merge(counts, on=identifiers, validate='one_to_one')
-    long = sessions.melt(id_vars=identifiers + ['n_individuals'],
+    long = records.melt(id_vars=identifiers + ['individual'],
                          value_vars=['entrusted', 'returned'],
-                         var_name='metric', value_name='session_mean')
-    summary = long.groupby(['population', 'p', 'round', 'metric']).session_mean.agg(
-        n_sessions='size', mean='mean', sd='std').reset_index()
+                         var_name='metric', value_name='amount')
+    summary = long.groupby(['population', 'p', 'round', 'metric']).agg(
+        n_sessions=('session', 'nunique'), n_individuals=('amount', 'size'),
+        mean=('amount', 'mean'), sd=('amount', 'std')).reset_index()
     summary['lower'] = summary['mean'] - summary['sd']
     summary['upper'] = summary['mean'] + summary['sd']
-    summary['band_available'] = summary.n_sessions >= 2
+    summary['band_available'] = summary.n_individuals >= 2
     return sessions, summary
+
+
+def summarise_human_cached(records):
+    """Persist the newly requested individual-SD tables beside the cleaned cache."""
+    try:
+        from . import human_data_cache as cache
+    except ImportError:
+        import human_data_cache as cache
+    provenance = records.attrs.get('human_cache', {})
+    if not provenance.get('table_path'):
+        return (*summarise_rounds(records), {'status': 'not_cached'})
+    view = Path(provenance['table_path']).parent
+    identity = {
+        'selected_records_sha256': provenance['table_sha256'],
+        'aggregation_sha256': hashlib.sha256(inspect.getsource(summarise_rounds).encode()).hexdigest(),
+        'pandas': pd.__version__,
+        'definition': 'Pooled individual amounts per condition and round; sample SD, ddof=1',
+    }
+    paths = [view / 'fig4_session_round_means.csv', view / 'fig4_individual_round_summary.csv']
+    manifest_path = view / 'fig4_individual_sd_manifest.json'
+    with cache._lock(view.parent / '.cache.lock'):
+        manifest = cache._read_json(manifest_path)
+        valid = manifest.get('identity') == identity and all(
+            cache._valid_file(path, manifest.get('hashes', {}).get(path.name)) for path in paths)
+        if valid:
+            tables = [cache._read_csv(path) for path in paths]
+            status = 'hit'
+        else:
+            tables = summarise_rounds(records)
+            for path, table in zip(paths, tables):
+                cache._write_csv(path, table)
+            cache._write_json(manifest_path, {'identity': identity,
+                'hashes': {path.name: shared.digest(path) for path in paths}})
+            status = 'tables_prepared'
+    result = {'status': status, 'manifest': str(manifest_path), **identity}
+    shared.event('human_fig4_individual_sd_cache', **result)
+    return (*tables, result)
 
 
 def plotting_tables(summary):
@@ -77,7 +117,10 @@ def prepare(args, out):
     if human.session.nunique() != 3:
         raise ValueError('Confirmed human contract requires three independent sessions')
     records = pd.concat([llm, human], ignore_index=True)
-    sessions, summary = summarise_rounds(records)
+    llm_sessions, llm_summary = summarise_rounds(llm)
+    human_sessions, human_summary, human_sd_cache = summarise_human_cached(human)
+    sessions = pd.concat([llm_sessions, human_sessions], ignore_index=True)
+    summary = pd.concat([llm_summary, human_summary], ignore_index=True)
     tables = {'selected_round_records': records, 'session_round_means': sessions,
               'round_summary': summary, **plotting_tables(summary)}
     for name, table in tables.items():
@@ -94,19 +137,25 @@ def prepare(args, out):
         'layout': '2 rows x 2 columns; LLM top, Human bottom; entrusted left, returned right',
         'rounds': {'LLM': 20, 'Human': 50}, 'p_values': P_VALUES,
         'n_sessions': {'LLM': int(llm.session.nunique()), 'Human': 3},
-        'aggregation': 'At each p and round, mean across 49 individuals within each session, then equal-weight mean across independent sessions.',
-        'band': 'mean +/- sample SD across session means; ddof=1; omitted when n_sessions=1',
-        'user_confirmed': ['2x2 layout', 'Human full 50 rounds', 'Human mean +/- SD bands',
-                           'LLM first selected session only, no interim band', 'Existing LLM and Nature human palettes'],
+        'aggregation': 'At each p and round, pool individual outgoing totals across selected sessions; mean and sample SD of those individual amounts. Session/player keys remain distinct.',
+        'band': 'mean +/- sample SD of individual amounts at each p and round; ddof=1; descriptive behavioural dispersion, not a confidence interval or between-session uncertainty',
+        'user_confirmed': ['2x2 layout', 'LLM 20 rounds; Human full 50 rounds',
+                           'All four panels: mean scatter without connecting lines and +/-1 individual SD shading',
+                           'Legends inside the right-hand Returned panels only; no session-count annotations',
+                           'Existing LLM and Nature human palettes'],
         'no_operations': ['No smoothing', 'No fitting', 'No convergence assertion',
                           'No outlier removal', 'No fabricated repeats', 'No significance tests'],
         'sources': sources, 'configurations': configs,
         'human_cache': human.attrs.get('human_cache', {}),
+        'human_individual_sd_cache': human_sd_cache,
         'column_roles': {'LLM': shared.column_roles(llm_fields, 'LLM'),
                          'Human': shared.column_roles(human_fields, 'Human')},
         'style': {'page_cm': PAGE_CM, 'positions_percent': POSITIONS,
                   'LLM_colors': shared.LLM_COLORS, 'Human_colors': shared.HUMAN_COLORS,
-                  'line_width_pt': 1.5, 'band_transparency_percent': 80,
+                  'mean_mark': 'scatter', 'symbol_size_pt': 4.2,
+                  'band_transparency_percent': 88, 'legend_pt': 14,
+                  'legend_location': 'inside Returned panels, above data',
+                  'session_count_labels': False,
                   'font': 'Arial', 'tick_pt': 16, 'title_pt': 18},
         'route': 'experimental four-panel Origin composition; must pass isolated probe before formal rendering',
         'table_hashes': {name: shared.digest(out / f'{name}.csv') for name in tables}}
@@ -120,7 +169,8 @@ def prepare(args, out):
     shared.write_json(out / 'validation.json', {'status': 'passed',
         'records': {'LLM': len(llm), 'Human': len(human)}, 'session_round_rows': len(sessions),
         'summary_rows': len(summary), 'source_hashes_verified': True,
-        'single_session_sd_is_missing': bool(summary.loc[summary.n_sessions == 1, 'sd'].isna().all()),
+        'all_individual_sd_bands_available': bool(summary.band_available.all()),
+        'band_unit': 'individual amounts within each condition and round',
         'individuals_per_session_condition_round': 49})
     # Three-session human averages should reproduce the existing Origin reference,
     # which is independent of the newly approved uncertainty calculation.
@@ -134,7 +184,18 @@ def prepare(args, out):
                 raise ValueError('Human 50-round means disagree with original Origin reference')
             comparisons[metric] = {'max_absolute_difference': error, 'rounds': 50}
         shared.write_json(out / 'human_reference_validation.json', comparisons)
-    notes = f'''# Figure 4 reproduction\n\nLLM: {llm.session.nunique()} independent session(s), 49 agents per condition, rounds 1–20.\nHuman: 3 independent sessions, 49 participants per condition per session, rounds 1–50.\n\nEach line averages within-session participant means equally across sessions. Shading is ±1 sample standard deviation of session means (ddof=1), not a confidence interval or individual behavioural dispersion. Single-session LLM SD is unavailable and is not replaced by zero.\n\nThe two populations use different observation windows. Entrusted and returned amounts are total outgoing amounts to four neighbours; no division by four or normalization is performed. All p conditions and observations are retained. The plotted p is the nominal condition.\n\nThis is an interim LLM result; the original claim of three LLM replicates does not apply. Visual flattening does not establish convergence or justify a retrospective stopping rule. No manuscript or response letter is modified.\n\nSuggested caption: Temporal dynamics of mean total entrusted (a, c) and returned (b, d) amounts under five nominal fractions of free players. LLM agents (a, b) were observed over 20 rounds and human participants (c, d) over 50 rounds. Each independent session contained 49 individuals per condition. Human curves show the mean of three session means at each round; shaded bands show ±1 standard deviation across those session means. LLM curves currently show one session, with no between-session uncertainty band.\n'''
+    notes = f'''# Figure 4 reproduction
+
+Main script: src/analysis/fig4.py. LLM rounds 1–20; Human rounds 1–50.
+
+At each p and round, scatter shows the mean of individual outgoing totals. Shading is ±1 sample SD of those individual amounts (ddof=1). Human participants are pooled across all three sessions, using (session, individual) as the identity; repeated rounds are not pooled. This band describes behavioural dispersion, not a confidence interval or between-session uncertainty. It is not divided by sqrt(n). Exact mean ±SD bounds are retained, including bounds outside the possible range of individual amounts.
+
+LLM data contain {llm.session.nunique()} session(s), 49 agents per condition per round. Human data contain three sessions, 147 individuals per condition per round. Session counts are retained in provenance and are not annotated on the figure. No independent repeats are invented.
+
+No connecting lines between mean scatter points. Shading connects adjacent round bounds only for display; no smoothing, fitting, normalization, exclusion or convergence test. Entrusted and returned amounts are total outgoing amounts to four neighbours. Nominal p values and the original population palettes are retained. The two internal legends are in the Returned panels.
+
+Suggested caption: Temporal dynamics of entrusted (a, c) and returned (b, d) amounts under five nominal fractions of free players. Points show the mean individual amount at each round; shaded bands show ±1 sample standard deviation across individuals. LLM agents (a, b) were observed over 20 rounds and human participants (c, d) over 50 rounds. Human observations are pooled across the three sessions.
+'''
     (out / 'Fig4_notes.md').write_text(notes, encoding='utf-8')
     shared.event('data_prepared', output=str(out), llm_records=len(llm), human_records=len(human))
 
@@ -172,9 +233,7 @@ def style_panel(op, graph, layer, index, limits, n_sessions):
         yl.set_float('top', ph * (top + height / 2) / 100 - yl.get_float('height') / 2)
     texts = [('Panel', f'({chr(97 + index)})', left - 3, top - 6, 19, False),
              ('Heading', f'{population} | {metric.title()}', left + width / 2, top - 6, 18, True),
-             ('XCaption', 'Round', left + width / 2, top + height + 4.8, 18, True),
-             ('SampleNote', f'n = {n_sessions} independent session' + ('s' if n_sessions > 1 else ''),
-              left + width / 2, top - 2.6, 13, True)]
+             ('XCaption', 'Round', left + width / 2, top + height + 4.8, 18, True)]
     for name, text, x, y, size, center in texts:
         lab = shared.set_label(layer, name, text, size)
         layer.lt_exec(f'{name}.attach=1;')
@@ -194,11 +253,13 @@ def style_panel(op, graph, layer, index, limits, n_sessions):
             'texts': {name: {'text': layer.label(name).text,
                               'size': layer.label(name).get_float('fsize'),
                               'font': layer.label(name).get_int('font')}
-                      for name in ['Panel', 'Heading', 'XCaption', 'SampleNote', 'yl']}}
+                      for name in ['Panel', 'Heading', 'XCaption', 'yl']}}
 
 
 def render(args, out):
     plan = json.loads((out / 'analysis_plan.json').read_text(encoding='utf-8'))
+    if plan.get('style', {}).get('mean_mark') != 'scatter' or 'individual amounts' not in plan.get('band', ''):
+        raise ValueError('Prepare fresh tables for the confirmed individual-SD scatter contract')
     for source in plan['sources']:
         if shared.digest(source['path']) != source['sha256']:
             raise ValueError('Source hash differs from the prepared plan')
@@ -220,6 +281,8 @@ def render(args, out):
         highest = max(subset['mean'].max(), subset.upper.max())
         lowest = min(0.0, subset.lower.min())
         step = 1 if metric == 'entrusted' else 2
+        if metric == 'returned':
+            highest += (highest - lowest) * .30  # Reserved internal two-row legend space.
         limits[metric] = (math.floor(lowest / step) * step,
                           math.ceil(highest / step) * step + step * .2, step)
     shared.event('origin_render_start', experimental_probe=args.probe)
@@ -242,20 +305,22 @@ def render(args, out):
             colors = shared.LLM_COLORS if population == 'LLM' else shared.HUMAN_COLORS
             n_sessions = plan['n_sessions'][population]
             plot_roles = []
-            if n_sessions >= 2:
+            if data[[f'P{i}Upper' for i in range(5)]].notna().all().all():
                 for i, color in enumerate(colors):
                     upper = layer.add_plot(wks, f'P{i}Upper', 'Round', type='l')
                     lower = layer.add_plot(wks, f'P{i}Lower', 'Round', type='l')
                     for bound in [upper, lower]:
                         bound.color = color
                         bound.set_cmd('-w 0')
-                        bound.transparency = 80
+                        bound.transparency = 88
                     plot_roles += [{'kind': 'sd_upper_fill', 'p': P_VALUES[i]},
                                    {'kind': 'sd_lower', 'p': P_VALUES[i]}]
             for i, color in enumerate(colors):
-                plot = layer.add_plot(wks, f'P{i}Mean', 'Round', type='l')
+                plot = layer.add_plot(wks, f'P{i}Mean', 'Round', type='s')
                 plot.color = color
-                plot.set_cmd('-w 750', '-d 0', '-l 1')
+                plot.symbol_kind = 2
+                plot.symbol_interior = 1
+                plot.symbol_size = 4.2
                 plot_roles.append({'kind': 'mean', 'p': P_VALUES[i]})
             roles.append(plot_roles)
             if len(layer.plot_list()) != len(plot_roles):
@@ -278,6 +343,11 @@ def render(args, out):
                 item = {**role, 'range': plot.lt_range(), 'pid': plot.get_int('pid'),
                         'rgb': list(plot.color), 'line_width': plot.get_float('line.width'),
                         'transparency': plot.transparency}
+                if role['kind'] == 'mean':
+                    item.update(symbol_kind=plot.symbol_kind, symbol_interior=plot.symbol_interior,
+                                symbol_size=plot.symbol_size)
+                    if item['pid'] != 201:
+                        raise RuntimeError('Mean plot is not native scatter')
                 if role['kind'] == 'sd_upper_fill':
                     # Apply native upper-to-next-lower fills only after all
                     # curves have been added to the final graph layer.
@@ -289,16 +359,23 @@ def render(args, out):
                         raise RuntimeError(f'Native between-curve fill readback failed: panel={index}, range={plot.lt_range()}, mode={item["fill_mode"]}, enabled={item["fill_enabled"]}')
                 state['plots'].append(item)
             # Separate row-specific legends preserve the different palette mappings.
-            if index in [0, 2]:
+            if index in [1, 3]:
                 n = len(plots) - 5
-                legend_text = '    '.join(f'\\l({n + i + 1}) p = {p:g}' for i, p in enumerate(P_VALUES))
-                legend = shared.set_label(layer, 'PLegend', legend_text, 15)
+                entries = [f'\\l({n + i + 1}) p = {p:g}' for i, p in enumerate(P_VALUES)]
+                legend_text = '  '.join(entries[:3]) + '\n' + '  '.join(entries[3:])
+                legend = shared.set_label(layer, 'PLegend', legend_text, 14)
                 layer.lt_exec('PLegend.attach=1;PLegend.background=0;')
                 pw, ph = op.lt_float('page.width'), op.lt_float('page.height')
-                legend.set_float('left', pw * .52 - legend.get_float('width') / 2)
-                legend.set_float('top', ph * (.025 if index == 0 else .525))
+                left, top, width, height = POSITIONS[index]
+                legend.set_float('left', pw * (left + width / 2) / 100 - legend.get_float('width') / 2)
+                legend.set_float('top', ph * (top + 1.0) / 100)
                 state['legend'] = {'text': legend.text, 'font': legend.get_int('font'),
-                                   'size': legend.get_float('fsize')}
+                                   'size': legend.get_float('fsize'),
+                                   'bounds_page_percent': [legend.get_float(key) / divisor * 100
+                                       for key, divisor in [('left', pw), ('top', ph), ('width', pw), ('height', ph)]]}
+                x, y, w, h = state['legend']['bounds_page_percent']
+                if not (x >= left and y >= top and x + w <= left + width and y + h <= top + height):
+                    raise RuntimeError('Returned legend is not fully inside its panel')
             readback.append(state)
         graph.activate()
         op.lt_exec('doc -uw;')
@@ -323,10 +400,16 @@ def render(args, out):
             if len(layer.plot_list()) != len(roles[index]):
                 raise RuntimeError('Saved plot count differs')
             for plot, role in zip(layer.plot_list(), roles[index]):
+                if role['kind'] == 'mean' and plot.get_int('pid') != 201:
+                    raise RuntimeError('Saved mean plot is not scatter')
                 if role['kind'] == 'sd_upper_fill':
                     layer.lt_exec(f'range __savedband={plot.lt_range()};get __savedband -pfv __savedmode;get __savedband -pf __savedfill;')
                     if op.lt_float('__savedmode') != 9 or op.lt_float('__savedfill') != 1:
                         raise RuntimeError('Saved between-curve fill did not persist')
+            if layer.label('SampleNote'):
+                raise RuntimeError('Unexpected session-count annotation')
+            if bool(layer.label('PLegend')) != (index in [1, 3]):
+                raise RuntimeError('Saved legend is not restricted to Returned panels')
         for name, address in saved_tables.items():
             sheet = op.find_sheet('w', address)
             if sheet is None:
@@ -346,6 +429,8 @@ def render(args, out):
         shared.write_json(out / 'origin_readback.json', {'status': 'passed',
             'experimental_probe': args.probe, 'origin_version': float(op.lt_float('@V')),
             'renderer_sha256': shared.digest(__file__), 'shared_module_sha256': shared.digest(shared.__file__),
+            'route_evidence_path': str(Path(args.route_evidence).resolve()) if args.route_evidence else None,
+            'route_evidence_sha256': shared.digest(args.route_evidence) if args.route_evidence else None,
             'layers': readback, 'page_cm': dimensions, 'artifact_sizes': sizes,
             'saved_project_reopened': True, 'saved_numeric_data_verified': True, 'visual_qa': 'pending'})
         saved.activate()
@@ -355,7 +440,7 @@ def render(args, out):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('command', choices=['prepare', 'render', 'all'])
-    p.add_argument('--human')
+    p.add_argument('--human', default=str(shared.DEFAULT_HUMAN_WORKBOOK), help='Human trust-game XLSX; defaults to the project human_experiment_datas workbook')
     p.add_argument('--human-cache-dir', help='Reusable human cache; default: repository/human_experiment_datas')
     p.add_argument('--llm-session', action='append')
     p.add_argument('--output-dir')
@@ -396,7 +481,7 @@ def main():
             render(args, out)
     snapshot = out / 'source'
     snapshot.mkdir(exist_ok=True)
-    for name in ['fig4.py', 'fig3.py', 'human_data_cache.py', 'run_fig4.ps1', 'requirements_fig4.txt', 'README_fig4.md', 'test_fig4_data_contract.py']:
+    for name in ['fig4.py', 'fig3.py', 'human_data_cache.py', 'run_fig4.ps1', 'requirements_fig4.txt', 'README_fig4.md', 'test_fig4_data_contract.py', 'verify_fig4_delivery.py']:
         source = Path(__file__).resolve().parent / name
         if source.exists():
             shutil.copy2(source, snapshot / name)
