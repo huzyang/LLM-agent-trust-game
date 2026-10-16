@@ -5,5 +5,6 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.cache/
 /outputs/
 /human_experiment_datas/*/
