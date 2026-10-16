@@ -2,6 +2,10 @@
 
 **Main script: `fig5.py`.** Requires Python 3.10–3.12, numpy, pandas, openpyxl; native rendering additionally requires originpro/OriginExt and physical Windows with Origin 2021+. Use existing project `.venv` for preparation and the EditaPlot managed Python for rendering. No packages are installed by this pipeline.
 
+For the complete three-session dataset, add `--reuse-fig3 <verified Fig3 output directory>` during preparation. This reuses the exact three source paths and hashes already established for Fig3; only the role/payoff columns absent from the Fig3 allocation tables are read. Session identifiers include the source-file index to prevent collisions. Human payoff histories reuse the existing hash-validated cache. Gini is still computed separately within each session, then averaged equally across the three sessions.
+
+For editable-project-only delivery, use `render --project-only --probe` for the new route's first capability validation. Only `Fig5.opju` is saved as a figure deliverable; a native PNG in the system temporary directory is used for visual QA. The owned Origin instance stays open for manual PDF/EPS export. After visually reviewing that preview, record visual QA in `origin_readback.json` and run `verify_fig5_delivery.py`; its project-only mode independently checks all selected sessions, cumulative payoffs, wealth summaries and pairwise Gini without requiring exported PDFs/TIFs.
+
 From the repository root:
 
 ```powershell

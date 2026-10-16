@@ -203,10 +203,23 @@ def make_tables(profiles,fractions):
 def prepare(args,out):
     import sklearn
     human_path=Path(args.human).resolve();llm_path=Path(args.llm).resolve()
-    sources=[{'path':str(p),'sha256':shared.digest(p)} for p in [llm_path,human_path]]
-    raw=pd.read_csv(llm_path,float_precision='round_trip');assert raw.data_source.eq('llm').all()
-    llm=pd.DataFrame({'population':'LLM','session':raw.iteration.map(lambda x:f'llm_iteration_{x}'),'p':raw.proportion,
-        'individual':raw.agent_id,'round':raw['round'],'entrusted':raw.total_sent,'returned':raw.total_returned,'source_sheet':llm_path.name})
+    reuse=getattr(args,'reuse_fig3',None)
+    if reuse:
+        prior=json.loads((Path(reuse)/'analysis_plan.json').read_text(encoding='utf-8'))
+        llm_sources=[s for s in prior['sources'] if s.get('kind')=='LLM CSV']
+        assert len(llm_sources)==3
+    else:llm_sources=[{'path':str(llm_path),'sha256':shared.digest(llm_path)}]
+    sources=llm_sources+[{'path':str(human_path),'sha256':shared.digest(human_path)}]
+    fields=['data_source','iteration','proportion','agent_id','round','total_sent','total_returned']+[f'{prefix}{i}' for prefix in ['sent_to_n','received_return_from_n','received_send_from_n'] for i in range(1,5)]
+    parts=[]
+    for index,source in enumerate(llm_sources,1):
+        assert shared.digest(source['path'])==source['sha256']
+        part=pd.read_csv(source['path'],usecols=fields,float_precision='round_trip')
+        part['_session']=str(index)+'_iteration_'+part.iteration.astype(str)
+        part['_source']=source['path'];parts.append(part)
+    raw=pd.concat(parts,ignore_index=True);assert raw.data_source.eq('llm').all()
+    llm=pd.DataFrame({'population':'LLM','session':'llm_'+raw['_session'],'p':raw.proportion,
+        'individual':raw.agent_id,'round':raw['round'],'entrusted':raw.total_sent,'returned':raw.total_returned,'source_sheet':raw['_source']})
     for i in range(4):
         for target,source in [('sent','sent_to_n'),('back','received_return_from_n'),('incoming','received_send_from_n')]:llm[f'{target}{i}']=raw[f'{source}{i+1}']
     human,provenance=human_cached(human_path)
@@ -236,6 +249,9 @@ def prepare(args,out):
     for s in sources:assert shared.digest(s['path'])==s['sha256']
     plan={'figure':'Fig. 6','rounds':20,'purpose':'Describe observed behavioural profiles and phenotype composition across agency conditions in LLM and Human populations.',
         'sources':sources,'panels':PANELS,'colors':COLORS,'radial_max':radial_max,'human_cache':provenance,'human_analysis_cache':analysis_cache,
+        'reused_fig3_source_manifest':str(reuse) if reuse else None,
+        'n_sessions':records.groupby('population').session.nunique().to_dict(),
+        'profile_titles':{'a':'Entrusted amount','c':'Returned amount','e':'Entrusted amount','g':'Returned amount'},
         'clustering':'Separate K=3 per population and role, pooling all p levels; raw six token-valued features; no standardization. Label clusters by descending centroid A.',
         'missing_policy':'User-approved individual A imputation in clustering only; radar profiles average observed values only. Conditional means with no events remain NA.',
         'returned_BC_units':'Previous-round total incoming after tripling; threshold 4 tokens.',
@@ -304,7 +320,7 @@ def style(op,layer,index,plan,profile):
         pw,ph=op.lt_float('page.width'),op.lt_float('page.height')
         yl.set_float('left',pw*(left-5)/100-yl.get_float('width')/2);yl.set_float('top',ph*(top+height/2)/100-yl.get_float('height')/2)
     label_at(op,layer,'Panel',f'({chr(97+index)})',left-1.8,top-4.7,17,False)
-    title=f'{role.title()} (tokens)' if kind=='profile' else f'{role.title()} phenotypes'
+    title=('Entrusted amount' if role=='entrusted' else 'Returned amount') if kind=='profile' else f'{role.title()} phenotypes'
     label_at(op,layer,'Heading',title,left+width/2,top-4.7,15)
     layer.lt_exec('v1=NA();v2=NA();v3=NA();v4=NA();layer -x;')
     geometry=[float(op.lt_float('layer.'+k)) for k in ['left','top','width','height']]
@@ -324,7 +340,7 @@ def render(args,out):
     qa=Path(args.qa_dir).resolve() if args.qa_dir else Path(tempfile.gettempdir())/('Fig6_QA_'+out.name)
     qa.mkdir(parents=True,exist_ok=False)
     profile=pd.read_csv(out/'observed_profiles.csv');roles=[];addresses={}
-    with shared.origin_slot(),shared.isolated_origin(not args.probe and not args.close_origin) as op:
+    with shared.origin_slot(),shared.isolated_origin(not args.close_origin and (not args.probe or getattr(args,'project_only',False))) as op:
         if not args.probe:assert ev['origin_version']==float(op.lt_float('@V'))
         graph=op.new_graph(template='Line');graph.name='Fig6'
         for index,(pop,role,kind) in enumerate(PANELS):
@@ -374,9 +390,9 @@ def render(args,out):
                 lab=layer.label(name)
                 if lab:layer.remove_label(lab)
         graph.activate();op.lt_exec('doc -uw;')
-        project=qa/'Fig6_internal.opju';assert op.save(str(project))
+        project=out/'Fig6.opju' if getattr(args,'project_only',False) else qa/'Fig6_internal.opju';assert op.save(str(project))
         # Respect user format choice: PNG only inside temporary internal QA directory.
-        for ext in ['pdf','eps']:
+        for ext in ([] if getattr(args,'project_only',False) else ['pdf','eps']):
             command=f'expGraph -sw type:={ext} filename:="Fig6" path:="{out}" overwrite:=replace tr.Margin:=1 tr.SpeedMode:=2;'
             assert op.lt_exec(command)
             assert (out/f'Fig6.{ext}').stat().st_size>1000
@@ -399,20 +415,22 @@ def render(args,out):
             actual=op.find_sheet('w',address).to_df();expected=pd.read_csv(out/f'{name}.csv')
             assert actual.shape==expected.shape
             assert np.allclose(actual.to_numpy(dtype=float),expected.to_numpy(dtype=float),atol=1e-10,equal_nan=True)
-        eps=(out/'Fig6.eps').read_bytes();assert eps.startswith(b'%!PS-Adobe') or b'%!PS-Adobe' in eps[:40]
-        assert (out/'Fig6.pdf').read_bytes().startswith(b'%PDF-')
+        if not getattr(args,'project_only',False):
+            eps=(out/'Fig6.eps').read_bytes();assert eps.startswith(b'%!PS-Adobe') or b'%!PS-Adobe' in eps[:40]
+            assert (out/'Fig6.pdf').read_bytes().startswith(b'%PDF-')
         shared.write_json(out/'origin_readback.json',{'status':'passed','experimental_probe':args.probe,
             'renderer_sha256':shared.digest(__file__),'shared_module_sha256':shared.digest(shared.__file__),
             'origin_version':float(op.lt_float('@V')),'layers':states,'saved_project_reopened':True,
             'saved_numeric_data_verified':True,'qa_directory':str(qa),'internal_project':str(project),
-            'preview':str(qa/'Fig6_preview.png'),'formal_formats':['pdf','eps'],'export_margin':'tight (tr.Margin=1)',
+            'preview':str(qa/'Fig6_preview.png'),'formal_formats':['opju'] if getattr(args,'project_only',False) else ['pdf','eps'],'export_margin':'user manual export' if getattr(args,'project_only',False) else 'tight (tr.Margin=1)',
+            'project_only':getattr(args,'project_only',False),
             'visual_qa':'pending','route_evidence':args.route_evidence})
         saved.activate()
     shared.event('origin_complete',output=str(out),preview=str(qa/'Fig6_preview.png'))
 
 def snapshot(out,evidence=None):
     dest=out/'source';dest.mkdir(exist_ok=True)
-    for name in ['fig6.py','fig3.py','human_data_cache.py','test_fig6_data_contract.py','README_fig6.md','run_fig6.ps1']:
+    for name in ['fig6.py','fig3.py','human_data_cache.py','test_fig6_data_contract.py','verify_fig6_data.py','README_fig6.md','run_fig6.ps1']:
         path=Path(__file__).with_name(name)
         if path.exists():shutil.copy2(path,dest/name)
     if evidence:shutil.copy2(evidence,dest/'verified_route_evidence.json')
@@ -423,6 +441,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('command',choices=['prepare','render','all'])
     p.add_argument('--llm');p.add_argument('--human',default=str(shared.DEFAULT_HUMAN_WORKBOOK));p.add_argument('--output-dir')
     p.add_argument('--origin-python');p.add_argument('--probe',action='store_true');p.add_argument('--route-evidence')
+    p.add_argument('--reuse-fig3',help='Reuse the three verified LLM source paths and hashes')
+    p.add_argument('--project-only',action='store_true',help='Deliver editable Fig6.opju without PDF/EPS export')
     p.add_argument('--qa-dir');p.add_argument('--close-origin',action='store_true');args=p.parse_args()
     if args.command in ['prepare','all']:
         if not args.llm:p.error('--llm is required')
@@ -430,11 +450,12 @@ def main():
         out.mkdir(parents=True,exist_ok=False);prepare(args,out)
     else:
         out=Path(args.output_dir).resolve()
-        if (out/'Fig6.pdf').exists():raise ValueError('Existing formal figure will not be overwritten')
+        if (out/'Fig6.pdf').exists() or (out/'Fig6.opju').exists():raise ValueError('Existing formal figure will not be overwritten')
     if args.command in ['render','all']:
         if args.origin_python:
             cmd=[args.origin_python,str(Path(__file__).resolve()),'render','--output-dir',str(out)]
             if args.probe:cmd.append('--probe')
+            if args.project_only:cmd.append('--project-only')
             if args.close_origin:cmd.append('--close-origin')
             if args.qa_dir:cmd+=['--qa-dir',args.qa_dir]
             if args.route_evidence:cmd+=['--route-evidence',args.route_evidence]

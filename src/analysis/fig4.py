@@ -115,7 +115,23 @@ def prepare(args, out):
     human_path = Path(args.human).resolve()
     human_hash = shared.digest(human_path)
     human, human_fields = shared.load_human(human_path, 50, getattr(args, 'human_cache_dir', None))
-    llm, sources, configs, llm_fields = shared.load_llm(args.llm_session, 20)
+    reuse = getattr(args, 'reuse_fig3', None)
+    if reuse:
+        reuse = Path(reuse).resolve()
+        prior = json.loads((reuse / 'analysis_plan.json').read_text(encoding='utf-8'))
+        table = reuse / 'selected_round_records.csv'
+        if shared.digest(table) != prior['table_hashes']['selected_round_records']:
+            raise ValueError('Fig3 cached records hash mismatch')
+        for source in prior['sources']:
+            if shared.digest(source['path']) != source['sha256']:
+                raise ValueError('Fig3 original source hash mismatch')
+        llm = pd.read_csv(table)
+        llm = llm[llm.population == 'LLM'].copy()
+        sources = [s for s in prior['sources'] if s.get('kind') != 'Human XLSX']
+        configs = prior.get('configurations', [])
+        llm_fields = pd.read_csv(args.llm_session[0], nrows=0).columns.tolist()
+    else:
+        llm, sources, configs, llm_fields = shared.load_llm(args.llm_session, 20)
     shared.validate_records(human, 50)
     shared.validate_records(llm, 20)
     if human.session.nunique() != 3:
@@ -150,6 +166,7 @@ def prepare(args, out):
         'no_operations': ['No smoothing', 'No fitting', 'No convergence assertion',
                           'No outlier removal', 'No fabricated repeats', 'No significance tests'],
         'sources': sources, 'configurations': configs,
+        'reused_fig3_records': str(reuse) if reuse else None,
         'human_cache': human.attrs.get('human_cache', {}),
         'human_individual_sd_cache': human_sd_cache,
         'column_roles': {'LLM': shared.column_roles(llm_fields, 'LLM'),
@@ -293,7 +310,7 @@ def render(args, out):
         limits[metric] = (math.floor(lowest / step) * step,
                           math.ceil(highest / step) * step + step * .2, step)
     shared.event('origin_render_start', experimental_probe=args.probe)
-    with shared.origin_slot(), shared.isolated_origin(not args.close_origin and not args.probe) as op:
+    with shared.origin_slot(), shared.isolated_origin(not args.close_origin and (not args.probe or getattr(args, 'project_only', False))) as op:
         saved_tables = {}
         for i, name in enumerate(['session_round_means', 'round_summary']):
             wks = op.new_sheet('w', f'Audit{i}')
@@ -360,7 +377,7 @@ def render(args, out):
                     # Apply native upper-to-next-lower fills only after all
                     # curves have been added to the final graph layer.
                     color = plan['style'][f'{population}_colors'][P_VALUES.index(role['p'])]
-                    layer.lt_exec(f'range __band = {plot.lt_range()};set __band -pf 1;set __band -pfv 9;set __band -pfb color({color});set __band -p2fb color({color});set __band -pfm 3;set __band -p2fm 3;set __band -paal 1;__fillmode=NA();__fillon=NA();get __band -pfv __fillmode;get __band -pf __fillon;')
+                    layer.lt_exec(f'range __band = {plot.lt_range()};set __band -pf 1;set __band -pfv 9;set __band -pfb color({color});set __band -p2fb color({color});set __band -pfm 1;set __band -p2fm 1;set __band -paal 1;__fillmode=NA();__fillon=NA();get __band -pfv __fillmode;get __band -pf __fillon;')
                     item['fill_mode'] = float(op.lt_float('__fillmode'))
                     item['fill_enabled'] = float(op.lt_float('__fillon'))
                     if item['fill_mode'] != 9 or item['fill_enabled'] != 1:
@@ -394,9 +411,16 @@ def render(args, out):
         project = out / 'Fig4.opju'
         if not op.save(str(project)):
             raise RuntimeError('Origin project save failed')
-        for extension in ['png', 'pdf', 'tif']:
-            graph.save_fig(str(out / f'Fig4.{extension}'), width=4200 if extension != 'pdf' else 0)
-        sizes = {f'Fig4.{ext}': (out / f'Fig4.{ext}').stat().st_size for ext in ['opju', 'png', 'pdf', 'tif']}
+        if getattr(args, 'project_only', False):
+            import tempfile
+            preview = Path(tempfile.gettempdir()) / f'Fig4_QA_{out.name}.png'
+            graph.save_fig(str(preview), width=2400)
+            sizes = {'Fig4.opju': project.stat().st_size}
+        else:
+            preview = out / 'Fig4.png'
+            for extension in ['png', 'pdf', 'tif']:
+                graph.save_fig(str(out / f'Fig4.{extension}'), width=4200 if extension != 'pdf' else 0)
+            sizes = {f'Fig4.{ext}': (out / f'Fig4.{ext}').stat().st_size for ext in ['opju', 'png', 'pdf', 'tif']}
         if any(size <= 0 for size in sizes.values()):
             raise RuntimeError('Missing or empty export')
         if not op.open(str(project)):
@@ -449,6 +473,7 @@ def render(args, out):
             'route_evidence_path': str(Path(args.route_evidence).resolve()) if args.route_evidence else None,
             'route_evidence_sha256': shared.digest(args.route_evidence) if args.route_evidence else None,
             'layers': readback, 'page_cm': dimensions, 'artifact_sizes': sizes,
+            'project_only': getattr(args, 'project_only', False), 'internal_preview': str(preview),
             'saved_project_reopened': True, 'saved_numeric_data_verified': True,
             'saved_colours_and_band_transparency_verified': True, 'visual_qa': 'pending'})
         saved.activate()
@@ -462,6 +487,8 @@ def parser():
     p.add_argument('--human-cache-dir', help='Reusable human cache; default: repository/human_experiment_datas')
     p.add_argument('--llm-session', action='append')
     p.add_argument('--output-dir')
+    p.add_argument('--reuse-fig3', help='Reuse hash-validated Fig3 selected individual round records')
+    p.add_argument('--project-only', action='store_true', help='Save OPJU only; internal temporary PNG for visual QA')
     p.add_argument('--origin-python')
     p.add_argument('--reference-dir', help='Optional independent 50-round human mean validation')
     p.add_argument('--route-evidence', help='Passed isolated probe origin_readback.json')
@@ -489,7 +516,7 @@ def main():
     if args.command in ['render', 'all']:
         if args.origin_python:
             command = [args.origin_python, str(Path(__file__).resolve()), 'render', '--output-dir', str(out)]
-            for name in ['probe', 'close_origin']:
+            for name in ['probe', 'close_origin', 'project_only']:
                 if getattr(args, name):
                     command.append('--' + name.replace('_', '-'))
             if args.route_evidence:

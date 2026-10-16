@@ -165,15 +165,28 @@ def plot_tables(expanded,wealth,sessions,summary):
 
 def prepare(args,out):
     llmpath=Path(args.llm_session).resolve(); humanpath=Path(args.human).resolve()
-    sources=[{'path':str(p),'sha256':shared.digest(p)} for p in [llmpath,humanpath]]
-    raw=pd.read_csv(llmpath,float_precision='round_trip')
+    reuse=getattr(args,'reuse_fig3',None)
+    if reuse:
+        prior=json.loads((Path(reuse)/'analysis_plan.json').read_text(encoding='utf-8'))
+        llm_sources=[s for s in prior['sources'] if s.get('kind')=='LLM CSV']
+        if len(llm_sources)!=3:raise ValueError('Expected three Fig3 LLM source sessions')
+    else:llm_sources=[{'path':str(llmpath),'sha256':shared.digest(llmpath)}]
+    sources=llm_sources+[{'path':str(humanpath),'sha256':shared.digest(humanpath)}]
+    fields=['data_source','iteration','proportion','agent_id','round','agent_type','round_payoff','accumulate_payoff','total_received_return','total_sent','total_received_send','total_returned']
+    parts=[]
+    for i,s in enumerate(llm_sources,1):
+        if shared.digest(s['path'])!=s['sha256']:raise ValueError('Fig3 source hash mismatch')
+        part=pd.read_csv(s['path'],usecols=fields,float_precision='round_trip')
+        part['_source_session']=str(i)+'_iteration_'+part.iteration.astype(str)
+        part['_source_file']=str(s['path']);parts.append(part)
+    raw=pd.concat(parts,ignore_index=True)
     if not raw.data_source.eq('llm').all(): raise ValueError('Mixed or mock input')
     if not np.allclose(raw.round_payoff,raw.total_received_return-raw.total_sent+raw.total_received_send-raw.total_returned,atol=1e-8):
         raise ValueError('LLM payoff convention mismatch (received_send is already tripled)')
-    llm=pd.DataFrame({'population':'LLM','session':raw.iteration.map(lambda i:f'llm_iteration_{i}'),
+    llm=pd.DataFrame({'population':'LLM','session':'llm_'+raw['_source_session'],
         'p':raw.proportion,'individual':raw.agent_id,'round':raw['round'],
         'group':raw.agent_type.map({'constrained':'Constrained','free':'Free'}),
-        'round_payoff':raw.round_payoff,'accumulate_payoff':raw.accumulate_payoff,'source_sheet':llmpath.name})
+        'round_payoff':raw.round_payoff,'accumulate_payoff':raw.accumulate_payoff,'source_sheet':raw['_source_file']})
     human,provenance=human_cached(humanpath)
     records=pd.concat([llm[llm['round'].between(1,20)],human[human['round'].between(1,20)]],ignore_index=True)
     validate_records(records,20)
@@ -199,6 +212,8 @@ def prepare(args,out):
         'observed_session_gini_range':[float(sessions.gini.min()),float(sessions.gini.max())],
         'group_absence':'No Free group at p=0; no Constrained group at p=1. Combined repeats observations intentionally and is not an additional sample.',
         'human_cache':provenance,'n_sessions':records.groupby('population').session.nunique().to_dict(),
+        'reused_fig3_source_manifest':str(reuse) if reuse else None,
+        'reuse_note':'Human full payoff cache reused. Fig3 allocation-only tables lack role and payoff fields; only required LLM raw columns read from hash-verified Fig3 sources.',
         'table_hashes':{name:shared.digest(out/f'{name}.csv') for name in tables},
         'reference_adaptation':{'source':'User reference Extended Data Fig. 3 B,E','applied':['wealth scatter plus summaries','Gini grouped bars','three player groups'],
             'overridden':['two-column LLM/Human layout','20 rounds both populations','wealth SD instead of SEM','Fig4 p palettes instead of type colors'],
@@ -268,7 +283,7 @@ def render(args,out):
     limwealth=(math.floor(low/50)*50,math.ceil((high+20)/50)*50,100)
     gs=pd.read_csv(out/'session_gini.csv');maxg=float(gs.gini.max())
     limgini=(0,max(.4,math.ceil((maxg+.04)*10)/10),.1)
-    with shared.origin_slot(),shared.isolated_origin(not args.probe and not args.close_origin) as op:
+    with shared.origin_slot(),shared.isolated_origin(not args.close_origin and (not args.probe or getattr(args,'project_only',False))) as op:
         if not args.probe and ev.get('origin_version')!=float(op.lt_float('@V')):
             raise ValueError('Origin version differs from verified probe')
         graph=op.new_graph(template='Line');graph.name='Fig5';sheet_ranges={};roles=[]
@@ -321,7 +336,13 @@ def render(args,out):
         if not np.allclose(dims,PAGE_CM,atol=.02):raise RuntimeError('Page size differs')
         project=out/'Fig5.opju'
         if not op.save(str(project)):raise RuntimeError('Save failed')
-        for ext in ['png','pdf','tif']:graph.save_fig(str(out/f'Fig5.{ext}'),width=4200 if ext!='pdf' else 0)
+        if getattr(args,'project_only',False):
+            import tempfile
+            preview=Path(tempfile.gettempdir())/f'Fig5_QA_{out.name}.png'
+            graph.save_fig(str(preview),width=2400)
+        else:
+            preview=out/'Fig5.png'
+            for ext in ['png','pdf','tif']:graph.save_fig(str(out/f'Fig5.{ext}'),width=4200 if ext!='pdf' else 0)
         if not op.open(str(project)):raise RuntimeError('Reopen failed')
         saved=op.find_graph('Fig5')
         if len(saved)!=4:raise RuntimeError('Four native layers missing')
@@ -346,12 +367,13 @@ def render(args,out):
             if len(actual)!=len(expected):raise RuntimeError('Saved worksheet rows differ')
             for column in expected.select_dtypes(include='number'):
                 if not np.allclose(actual[column],expected[column],atol=1e-10,equal_nan=True):raise RuntimeError('Saved worksheet data differ')
-        sizes={f'Fig5.{ext}':(out/f'Fig5.{ext}').stat().st_size for ext in ['opju','png','pdf','tif']}
+        sizes={f'Fig5.{ext}':(out/f'Fig5.{ext}').stat().st_size for ext in (['opju'] if getattr(args,'project_only',False) else ['opju','png','pdf','tif'])}
         if min(sizes.values())<=0:raise RuntimeError('Empty export')
         shared.write_json(out/'origin_readback.json',{'status':'passed','experimental_probe':args.probe,
             'origin_version':float(op.lt_float('@V')),'renderer_sha256':shared.digest(__file__),
             'shared_module_sha256':shared.digest(shared.__file__),'layers':states,'page_cm':dims,
-            'artifact_sizes':sizes,'saved_project_reopened':True,'saved_numeric_data_verified':True,'visual_qa':'pending'})
+            'artifact_sizes':sizes,'saved_project_reopened':True,'saved_numeric_data_verified':True,'visual_qa':'pending',
+            'project_only':getattr(args,'project_only',False),'internal_preview':str(preview)})
         saved.activate()
     shared.event('origin_complete',output=str(out))
 
@@ -370,6 +392,8 @@ def main():
     parser.add_argument('command',choices=['prepare','render','all'])
     parser.add_argument('--llm-session');parser.add_argument('--human',default=str(shared.DEFAULT_HUMAN_WORKBOOK))
     parser.add_argument('--output-dir');parser.add_argument('--probe',action='store_true')
+    parser.add_argument('--reuse-fig3',help='Reuse verified Fig3 source manifest for all three LLM sessions')
+    parser.add_argument('--project-only',action='store_true',help='Save editable OPJU and temporary QA preview only')
     parser.add_argument('--route-evidence');parser.add_argument('--close-origin',action='store_true')
     parser.add_argument('--origin-python',help='External Python with originpro; required by all if preparation uses another environment')
     args=parser.parse_args()
@@ -384,6 +408,7 @@ def main():
         if args.command=='all' and args.origin_python:
             command=[args.origin_python,str(Path(__file__).resolve()),'render','--output-dir',str(out)]
             if args.probe:command.append('--probe')
+            if args.project_only:command.append('--project-only')
             if args.close_origin:command.append('--close-origin')
             if args.route_evidence:command+=['--route-evidence',args.route_evidence]
             subprocess.run(command,check=True)

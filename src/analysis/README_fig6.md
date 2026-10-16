@@ -2,6 +2,10 @@
 
 **Main implementation: `fig6.py`.** Native Origin figure, two rows by four columns. Formal figure formats are PDF and EPS only; tight export margins are explicit. Internal editable OPJU and PNG for save/reopen and visual checks are stored in the OS temporary folder, outside the delivery folder.
 
+Current three-session project-only workflow: prepare with `--reuse-fig3 <verified Fig3 directory>` to reuse all three source paths and hashes; only the necessary directional LLM columns absent from allocation-only tables are read. Human directional records and derived phenotype tables both reuse their verified caches. Source-file indexes distinguish identical agent/iteration identifiers across experiments. Fit the LLM clusters jointly across all selected sessions and p levels, separately for each role, using the unchanged approved feature and imputation definitions.
+
+Render with `--project-only --probe` for first-route validation. This delivers `Fig6.opju` directly in the result folder, keeps its owned Origin instance open, and creates only a temporary visual QA PNG; no PDF/EPS is exported. Profile titles a/e are exactly `Entrusted amount`; c/g are exactly `Returned amount`. The observed radial values remain in tokens. `verify_fig6_data.py <output directory>` independently recomputes the observed features, counts, imputation lineage and profile summaries.
+
 Requirements: numpy, pandas, openpyxl, scikit-learn for data preparation. The existing project Python environment already has these. Origin external rendering uses originpro/OriginExt in the existing EditaPlot environment, and does not require scikit-learn. Do not install or modify Origin.
 
 From repository root:
