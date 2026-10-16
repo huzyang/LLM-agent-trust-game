@@ -34,3 +34,7 @@ python -m src.analysis.human_data_cache --human 'human_experiment_datas/2024_NHB
 文件可以直接导入 Origin 或复制到新图的交付文件夹。两份原始文件若仅路径不同、内容哈希相同，会复用同一缓存。若要在另一台电脑复现，需要原始工作簿以核验来源。
 
 生成的缓存子目录默认不进入 Git；源代码和本说明可以版本管理。数据验证报告见目录根部 `cache_verification.json`。
+
+2026-10-16 新增 Fig. 5 财富缓存：`src/analysis/fig5.py` 在 `trust_game_wealth_<source hash>_<reader hash>` 子目录存放 `all_round_payoffs.csv` 和 `source_manifest.json`。包含15张 TG 实验表的逐人50轮收益、累计收益和实际角色；`player.is_node_player=1` 表示 Constrained，0 表示 Free。只在缓存缺失或源文件/读取规则变更时解析完整实验表；读取时核对源文件和缓存哈希，并验证累计收益等于逐轮收益累加。它不改动 Fig. 3/4 缓存。当前 Fig. 5 只取前20轮；负累计收益按用户确认原值保留。Gini 先按场次和群体计算，再等权汇总场次，不把三场人类实验拼接后计算 Gini。
+
+2026-10-16 新增 Fig. 6 行为表型缓存：`src/analysis/fig6.py` 在 `trust_game_phenotypes_<source hash>_<reader hash>` 子目录保存逐人逐轮、逐方向的委托/收到返还/收到委托金额，`incoming` 统一为乘三倍后的实际收到金额。`rounds_20` 存放六特征实测值、表型分类和另一种缺失填补规则下的分类。`analysis_manifest.json` 绑定原始记录哈希、特征函数、聚类函数与 scikit-learn 版本；命中时不重新计算人类特征与聚类。无观测条件保留 NA 和事件数0；仅聚类输入按用户确认用该个体 A 填补。雷达图只汇总实测条件均值。原始数据和既有缓存保持只读。

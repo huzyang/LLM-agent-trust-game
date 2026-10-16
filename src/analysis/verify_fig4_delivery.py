@@ -56,10 +56,11 @@ def audit(out, visual_reviewed):
         bands = [p for p in layer['plots'] if p['kind'] == 'sd_upper_fill']
         assert len(means) == len(bands) == 5
         assert all(p['pid'] == 201 and abs(p['symbol_size'] - 4.2) < .01 for p in means)
-        palette = shared.LLM_COLORS if index < 2 else shared.HUMAN_COLORS
+        palette = plan['style']['LLM_colors' if index < 2 else 'Human_colors']
         expected = [[int(c[n:n+2], 16) for n in [1, 3, 5]] for c in palette]
         assert [p['rgb'] for p in means] == expected
-        assert all(p['fill_mode'] == 9 and p['fill_enabled'] == 1 and p['transparency'] == 88 for p in bands)
+        transparency = plan['style']['band_transparency_percent']['LLM' if index < 2 else 'Human']
+        assert all(p['fill_mode'] == 9 and p['fill_enabled'] == 1 and p['transparency'] == transparency for p in bands)
         assert 'SampleNote' not in layer['texts']
         assert ('legend' in layer) == (index in [1, 3])
         assert layer['axis_tick_pt'] == [16, 16]
@@ -75,7 +76,7 @@ def audit(out, visual_reviewed):
         raise ValueError('Inspect the exported PNG, then pass --visual-reviewed to record the visual QA')
     report['visual_qa'] = 'passed'
     report['visual_qa_notes'] = [
-        'Inspected PNG: four panels, mean scatter without connecting lines, five native individual-SD bands in every panel, original palettes, p legends inside Returned panels only, no session annotations; labels and data are unclipped.'
+        'Inspected PNG: four panels, mean scatter without connecting lines, five native individual-SD bands in every panel, confirmed population palettes and band opacity, p legends inside Returned panels only, no session annotations; labels and data are unclipped.'
     ]
     shared.write_json(report_path, report)
     source = out / 'source'

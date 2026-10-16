@@ -30,6 +30,10 @@ except ImportError:
 PANELS = [('LLM', 'entrusted'), ('LLM', 'returned'),
           ('Human', 'entrusted'), ('Human', 'returned')]
 P_VALUES = shared.P_VALUES
+# User-confirmed Fig. 4 top-row palette, ordered by increasing nominal p.
+# Fig. 3 retains its existing palette; the human palette is unchanged.
+LLM_COLORS = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00']
+BAND_TRANSPARENCY = {'LLM': 94, 'Human': 88}
 PAGE_CM = (28, 23)
 POSITIONS = [(10, 12, 35, 29), (61, 12, 35, 29),
              (10, 62, 35, 29), (61, 62, 35, 29)]
@@ -142,7 +146,7 @@ def prepare(args, out):
         'user_confirmed': ['2x2 layout', 'LLM 20 rounds; Human full 50 rounds',
                            'All four panels: mean scatter without connecting lines and +/-1 individual SD shading',
                            'Legends inside the right-hand Returned panels only; no session-count annotations',
-                           'Existing LLM and Nature human palettes'],
+                           '2026-10-16: LLM blue/orange/teal/purple/vermillion palette and 94% transparent bands; original Human palette and 88% transparent bands'],
         'no_operations': ['No smoothing', 'No fitting', 'No convergence assertion',
                           'No outlier removal', 'No fabricated repeats', 'No significance tests'],
         'sources': sources, 'configurations': configs,
@@ -151,9 +155,10 @@ def prepare(args, out):
         'column_roles': {'LLM': shared.column_roles(llm_fields, 'LLM'),
                          'Human': shared.column_roles(human_fields, 'Human')},
         'style': {'page_cm': PAGE_CM, 'positions_percent': POSITIONS,
-                  'LLM_colors': shared.LLM_COLORS, 'Human_colors': shared.HUMAN_COLORS,
+                  'LLM_colors': LLM_COLORS, 'Human_colors': shared.HUMAN_COLORS,
+                  'LLM_palette_id': 'user_confirmed_blue_orange_teal_purple_vermillion_20261016',
                   'mean_mark': 'scatter', 'symbol_size_pt': 4.2,
-                  'band_transparency_percent': 88, 'legend_pt': 14,
+                  'band_transparency_percent': BAND_TRANSPARENCY, 'legend_pt': 14,
                   'legend_location': 'inside Returned panels, above data',
                   'session_count_labels': False,
                   'font': 'Arial', 'tick_pt': 16, 'title_pt': 18},
@@ -192,7 +197,7 @@ At each p and round, scatter shows the mean of individual outgoing totals. Shadi
 
 LLM data contain {llm.session.nunique()} session(s), 49 agents per condition per round. Human data contain three sessions, 147 individuals per condition per round. Session counts are retained in provenance and are not annotated on the figure. No independent repeats are invented.
 
-No connecting lines between mean scatter points. Shading connects adjacent round bounds only for display; no smoothing, fitting, normalization, exclusion or convergence test. Entrusted and returned amounts are total outgoing amounts to four neighbours. Nominal p values and the original population palettes are retained. The two internal legends are in the Returned panels.
+No connecting lines between mean scatter points. Shading connects adjacent round bounds only for display; no smoothing, fitting, normalization, exclusion or convergence test. Entrusted and returned amounts are total outgoing amounts to four neighbours. Nominal p values are retained. The LLM palette in ascending p order is {', '.join(LLM_COLORS)}. LLM bands are 94% transparent (6% opaque), with solid mean points, to reduce overlapping fill colours. The original Human palette and 88% band transparency are retained. These are display changes only; exact SD bounds are unchanged. The two internal legends are in the Returned panels.
 
 Suggested caption: Temporal dynamics of entrusted (a, c) and returned (b, d) amounts under five nominal fractions of free players. Points show the mean individual amount at each round; shaded bands show ±1 sample standard deviation across individuals. LLM agents (a, b) were observed over 20 rounds and human participants (c, d) over 50 rounds. Human observations are pooled across the three sessions.
 '''
@@ -260,6 +265,8 @@ def render(args, out):
     plan = json.loads((out / 'analysis_plan.json').read_text(encoding='utf-8'))
     if plan.get('style', {}).get('mean_mark') != 'scatter' or 'individual amounts' not in plan.get('band', ''):
         raise ValueError('Prepare fresh tables for the confirmed individual-SD scatter contract')
+    if plan['style'].get('LLM_colors') != LLM_COLORS or plan['style'].get('band_transparency_percent') != BAND_TRANSPARENCY:
+        raise ValueError('Prepare fresh tables to freeze the current confirmed Fig. 4 colour contract')
     for source in plan['sources']:
         if shared.digest(source['path']) != source['sha256']:
             raise ValueError('Source hash differs from the prepared plan')
@@ -302,7 +309,7 @@ def render(args, out):
             wks.cols_axis('x' + 'y' * (len(data.columns) - 1))
             saved_tables[f'{population.lower()}_{metric}'] = wks.lt_range(False)
             layer = graph[0] if index == 0 else graph.add_layer()
-            colors = shared.LLM_COLORS if population == 'LLM' else shared.HUMAN_COLORS
+            colors = plan['style'][f'{population}_colors']
             n_sessions = plan['n_sessions'][population]
             plot_roles = []
             if data[[f'P{i}Upper' for i in range(5)]].notna().all().all():
@@ -312,7 +319,7 @@ def render(args, out):
                     for bound in [upper, lower]:
                         bound.color = color
                         bound.set_cmd('-w 0')
-                        bound.transparency = 88
+                        bound.transparency = plan['style']['band_transparency_percent'][population]
                     plot_roles += [{'kind': 'sd_upper_fill', 'p': P_VALUES[i]},
                                    {'kind': 'sd_lower', 'p': P_VALUES[i]}]
             for i, color in enumerate(colors):
@@ -352,7 +359,7 @@ def render(args, out):
                 if role['kind'] == 'sd_upper_fill':
                     # Apply native upper-to-next-lower fills only after all
                     # curves have been added to the final graph layer.
-                    color = (shared.LLM_COLORS if population == 'LLM' else shared.HUMAN_COLORS)[P_VALUES.index(role['p'])]
+                    color = plan['style'][f'{population}_colors'][P_VALUES.index(role['p'])]
                     layer.lt_exec(f'range __band = {plot.lt_range()};set __band -pf 1;set __band -pfv 9;set __band -pfb color({color});set __band -p2fb color({color});set __band -pfm 3;set __band -p2fm 3;set __band -paal 1;__fillmode=NA();__fillon=NA();get __band -pfv __fillmode;get __band -pf __fillon;')
                     item['fill_mode'] = float(op.lt_float('__fillmode'))
                     item['fill_enabled'] = float(op.lt_float('__fillon'))
@@ -400,13 +407,22 @@ def render(args, out):
         for index, layer in enumerate(saved):
             if len(layer.plot_list()) != len(roles[index]):
                 raise RuntimeError('Saved plot count differs')
+            population = PANELS[index][0]
             for plot, role in zip(layer.plot_list(), roles[index]):
+                color = plan['style'][f'{population}_colors'][P_VALUES.index(role['p'])]
+                expected_rgb = [int(color[n:n+2], 16) for n in [1, 3, 5]]
+                if list(plot.color) != expected_rgb:
+                    raise RuntimeError('Saved plot colour differs from the frozen palette')
                 if role['kind'] == 'mean' and plot.get_int('pid') != 201:
                     raise RuntimeError('Saved mean plot is not scatter')
+                if role['kind'] == 'mean' and not math.isclose(plot.symbol_size, 4.2, abs_tol=.01):
+                    raise RuntimeError('Saved scatter size differs')
                 if role['kind'] == 'sd_upper_fill':
                     layer.lt_exec(f'range __savedband={plot.lt_range()};get __savedband -pfv __savedmode;get __savedband -pf __savedfill;')
                     if op.lt_float('__savedmode') != 9 or op.lt_float('__savedfill') != 1:
                         raise RuntimeError('Saved between-curve fill did not persist')
+                    if plot.transparency != plan['style']['band_transparency_percent'][population]:
+                        raise RuntimeError('Saved band transparency differs from the frozen style')
             if layer.label('SampleNote'):
                 raise RuntimeError('Unexpected session-count annotation')
             if bool(layer.label('PLegend')) != (index in [1, 3]):
@@ -433,7 +449,8 @@ def render(args, out):
             'route_evidence_path': str(Path(args.route_evidence).resolve()) if args.route_evidence else None,
             'route_evidence_sha256': shared.digest(args.route_evidence) if args.route_evidence else None,
             'layers': readback, 'page_cm': dimensions, 'artifact_sizes': sizes,
-            'saved_project_reopened': True, 'saved_numeric_data_verified': True, 'visual_qa': 'pending'})
+            'saved_project_reopened': True, 'saved_numeric_data_verified': True,
+            'saved_colours_and_band_transparency_verified': True, 'visual_qa': 'pending'})
         saved.activate()
     shared.event('origin_complete', output=str(out))
 

@@ -38,7 +38,7 @@ class Params:
         load_dotenv(Path(CommonUtils.get_project_root_path()) / ".env")
         self.num_agents = 49
         self.width = self.height = 7
-        self.proportions = [0.25, 0.5, 0.75, 1.0]
+        self.proportions = [0, 0.25, 0.5, 0.75, 1.0]
         self.rounds = 20
         self.iterations = 1
         self.game_type = "trust_game"
