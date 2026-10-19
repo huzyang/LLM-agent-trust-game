@@ -65,14 +65,30 @@ for source in plan['sources']:
     for i in range(4):
         for target,origin in [('sent','sent_to_n'),('back','received_return_from_n'),('incoming','received_send_from_n')]:
             mapping[f'{target}{i}']=f'{origin}{i+1}'
-    original=pd.read_csv(source['path'],usecols=['proportion','agent_id','round']+list(mapping.values()))
+    original=pd.read_csv(source['path'],usecols=['proportion','agent_id','round','total_received_send']+list(mapping.values()))
     original=original.sort_values(['proportion','agent_id','round'])
     selected=rec[(rec.population=='LLM')&(rec.source_sheet==source['path'])].sort_values(['p','individual','round'])
     assert len(original)==len(selected)
-    for target,origin in mapping.items():assert np.allclose(selected[target],original[origin],atol=1e-12,rtol=0)
+    for target,origin in mapping.items():
+        scale=3 if target.startswith('incoming') else 1
+        assert np.allclose(selected[target],scale*original[origin],atol=1e-12,rtol=0)
+    assert np.allclose(selected[[f'incoming{i}' for i in range(4)]].sum(axis=1),original.total_received_send,atol=1e-8,rtol=0)
+    # Independently anchor B/C to the post-tripling aggregate column, not to the conversion helper.
+    receipt=pd.Series(original.total_received_send.to_numpy(),index=selected.index)
+    work=selected.copy();work['receipt_total']=receipt
+    work['previous_receipt_total']=work.groupby(keys).receipt_total.shift()
+    actual=f[(f.population=='LLM')&(f.role=='returned')].set_index(keys)
+    source_ids=work[keys].drop_duplicates().set_index(keys).index
+    actual=actual.loc[source_ids]
+    for factor,mask in [('B',work.previous_receipt_total>=4),('C',work.previous_receipt_total<4)]:
+        direct=work[mask].groupby(keys).returned.agg(['mean','size']).reindex(actual.index)
+        assert np.allclose(actual[factor],direct['mean'],atol=1e-10,equal_nan=True)
+        assert np.array_equal(actual[factor+'n'],direct['size'].fillna(0))
 result={'status':'passed','individuals':expected_individuals,'role_assignments':len(labels),'raw_records':len(base),
     'independently_recomputed_feature_cells':checks,'imputation_lineage_verified':True,
-    'observed_only_profiles_verified':True,'fraction_counts_and_step_helpers_verified':True}
+    'observed_only_profiles_verified':True,'fraction_counts_and_step_helpers_verified':True,
+    'incoming_units_checked_against_raw_total_received_send':True,
+    'returned_BC_independently_checked_using_post_tripling_aggregate':True}
 (p/'data_verification.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
 print(json.dumps(result))
 

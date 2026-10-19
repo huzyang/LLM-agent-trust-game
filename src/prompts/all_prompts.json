@@ -56,7 +56,7 @@
   ],
   "Like-people": "\nYou are not an AI——you must simulate a real human making decisions.",
   "Experiment_context": {
-    "total_round_info": "\n# Background and objective\nYou are participating in a game experiment that consists of {rounds} rounds. This experiment aims to examine decision-making patterns of token allocation and reciprocity. You sequentially perform two roles per round: trustor (sending tokens to neighbors) and trustee (returning tokens after receiving tripled amounts). Your cumulative payoff depends on your allocation choices and reciprocal behaviors of neighbors.",
+    "base_info": "\n# Background and objective\nYou are participating in a game experiment. This experiment aims to examine decision-making patterns of token allocation and reciprocity. You sequentially perform two roles per round: trustor (sending tokens to neighbors) and trustee (returning tokens after receiving tripled amounts). Your cumulative payoff depends on your allocation choices and reciprocal behaviors of neighbors.",
     "no_total_round_info": "\n# Background and objective\nYou are participating in a game experiment. You do not know the total number of rounds in this experiment, and you must not assume that any given round is the final round. This experiment aims to examine decision-making patterns of token allocation and reciprocity. You sequentially perform two roles per round: trustor (sending tokens to neighbors) and trustee (returning tokens after receiving tripled amounts). Your cumulative payoff depends on your allocation choices and reciprocal behaviors of neighbors."
   },
   "Individual_goal": " Your goal is to maximize your cumulative payoff over the entire experiment.",

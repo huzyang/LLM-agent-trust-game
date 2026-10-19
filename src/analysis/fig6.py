@@ -200,6 +200,13 @@ def make_tables(profiles,fractions):
             tables[f'{pop.lower()}_{role}_{kind}']=pd.DataFrame(result)
     return tables,maxima
 
+def llm_incoming_after_tripling(raw):
+    """Raw directional receipts are pre-multiplier; aggregate receipts are post-multiplier."""
+    edges=raw[[f'received_send_from_n{i}' for i in range(1,5)]].to_numpy(dtype=float)*3
+    if not np.allclose(edges.sum(axis=1),raw.total_received_send.to_numpy(dtype=float),atol=1e-8,rtol=0):
+        raise ValueError('LLM incoming unit mismatch: total_received_send must equal 3 x raw directional receipts')
+    return edges
+
 def prepare(args,out):
     import sklearn
     human_path=Path(args.human).resolve();llm_path=Path(args.llm).resolve()
@@ -210,7 +217,7 @@ def prepare(args,out):
         assert len(llm_sources)==3
     else:llm_sources=[{'path':str(llm_path),'sha256':shared.digest(llm_path)}]
     sources=llm_sources+[{'path':str(human_path),'sha256':shared.digest(human_path)}]
-    fields=['data_source','iteration','proportion','agent_id','round','total_sent','total_returned']+[f'{prefix}{i}' for prefix in ['sent_to_n','received_return_from_n','received_send_from_n'] for i in range(1,5)]
+    fields=['data_source','iteration','proportion','agent_id','round','total_sent','total_returned','total_received_send']+[f'{prefix}{i}' for prefix in ['sent_to_n','received_return_from_n','received_send_from_n'] for i in range(1,5)]
     parts=[]
     for index,source in enumerate(llm_sources,1):
         assert shared.digest(source['path'])==source['sha256']
@@ -220,8 +227,10 @@ def prepare(args,out):
     raw=pd.concat(parts,ignore_index=True);assert raw.data_source.eq('llm').all()
     llm=pd.DataFrame({'population':'LLM','session':'llm_'+raw['_session'],'p':raw.proportion,
         'individual':raw.agent_id,'round':raw['round'],'entrusted':raw.total_sent,'returned':raw.total_returned,'source_sheet':raw['_source']})
+    incoming=llm_incoming_after_tripling(raw)
     for i in range(4):
-        for target,source in [('sent','sent_to_n'),('back','received_return_from_n'),('incoming','received_send_from_n')]:llm[f'{target}{i}']=raw[f'{source}{i+1}']
+        for target,source in [('sent','sent_to_n'),('back','received_return_from_n')]:llm[f'{target}{i}']=raw[f'{source}{i+1}']
+        llm[f'incoming{i}']=incoming[:,i]
     human,provenance=human_cached(human_path)
     records=pd.concat([llm, human[human['round'].between(1,20)]],ignore_index=True)
     validate(records,20)
@@ -251,7 +260,9 @@ def prepare(args,out):
         'sources':sources,'panels':PANELS,'colors':COLORS,'radial_max':radial_max,'human_cache':provenance,'human_analysis_cache':analysis_cache,
         'reused_fig3_source_manifest':str(reuse) if reuse else None,
         'n_sessions':records.groupby('population').session.nunique().to_dict(),
-        'profile_titles':{'a':'Entrusted amount','c':'Returned amount','e':'Entrusted amount','g':'Returned amount'},
+        'profile_titles':{'a':'Entrusted','c':'Returned','e':'Entrusted','g':'Returned'},
+        'incoming_units':{'LLM':'3 x raw received_send_from_n1..4; sum checked against total_received_send',
+            'Human':'3 x raw player.receive_send_L/U/R/D', 'standardized':'tokens after tripling'},
         'clustering':'Separate K=3 per population and role, pooling all p levels; raw six token-valued features; no standardization. Label clusters by descending centroid A.',
         'missing_policy':'User-approved individual A imputation in clustering only; radar profiles average observed values only. Conditional means with no events remain NA.',
         'returned_BC_units':'Previous-round total incoming after tripling; threshold 4 tokens.',
@@ -264,7 +275,9 @@ def prepare(args,out):
     shared.write_json(out/'analysis_plan.json',plan)
     (out/'Fig6_notes.md').write_text('''# Fig6: six-factor behavioural phenotypes (first version)
 
-Main source: src/analysis/fig6.py. Both populations use rounds 1–20. Native Origin produces eight editable layers and exports only PDF/EPS as formal figures. Internal OPJU and PNG are isolated verification artifacts in the OS temporary folder; no reference pixels enter the figure. Output border uses Origin expGraph tr.Margin=1 (tight).
+Main source: src/analysis/fig6.py. Both populations use rounds 1–20. Native Origin produces eight editable layers. In project-only mode, Fig6.opju is delivered and no PDF/EPS is exported; the native PNG is only an internal temporary verification artifact. Otherwise PDF/EPS are exported with tight margins. No reference pixels enter the figure.
+
+Corrected incoming units: LLM received_send_from_n1..4 are pre-multiplier; each is multiplied by 3 and their sum is checked against the already-tripled total_received_send. Human directional receipts are likewise multiplied by 3. Returned B/C therefore use the same post-tripling threshold of 4 tokens for both populations. Profile titles a/e are Entrusted; c/g are Returned.
 
 Six factors follow Fig3 and Extended Data Fig4 of Jia et al., Nature Human Behaviour 2025, doi:10.1038/s41562-025-02289-0, with explicit implementation choices recorded here rather than claiming exact recovery of their software. A = individual mean amount over rounds 1–20. Entrusted B/C = mean entrusted at t conditional on total sent at t-1 >=4/<4; D/E/F = mean entrusted at t when 0–1/2/3–4 neighbours returned >= the focal individual's edge-specific entrusted amount in t-1. Returned B/C = mean returned at t conditional on actual total tokens received at t-1 after tripling >=4/<4. Returned D/E/F = mean returned at t when 0–1/2/3–4 neighbouring trustors sent at t-1 >= their own sends at t-2; these use rounds 3–20 only. Supplement C repeats >=4 for C in one sentence; we use <4 as specified in the main Extended Data Fig4 caption. Exact timing and received-amount scale are implementation interpretations made explicit for review.
 
@@ -320,7 +333,7 @@ def style(op,layer,index,plan,profile):
         pw,ph=op.lt_float('page.width'),op.lt_float('page.height')
         yl.set_float('left',pw*(left-5)/100-yl.get_float('width')/2);yl.set_float('top',ph*(top+height/2)/100-yl.get_float('height')/2)
     label_at(op,layer,'Panel',f'({chr(97+index)})',left-1.8,top-4.7,17,False)
-    title=('Entrusted amount' if role=='entrusted' else 'Returned amount') if kind=='profile' else f'{role.title()} phenotypes'
+    title=('Entrusted' if role=='entrusted' else 'Returned') if kind=='profile' else f'{role.title()} phenotypes'
     label_at(op,layer,'Heading',title,left+width/2,top-4.7,15)
     layer.lt_exec('v1=NA();v2=NA();v3=NA();v4=NA();layer -x;')
     geometry=[float(op.lt_float('layer.'+k)) for k in ['left','top','width','height']]

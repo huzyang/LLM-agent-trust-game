@@ -79,7 +79,7 @@ def build_scenarios(params):
     scenarios = []
     for model in params.model_type_list:
         for proportion in params.proportions:
-            for iteration in range(1, params.iterations + 1):
+            for iteration in range (1, params.iterations + 1):
                 run_id = len(scenarios) + 1
                 # Stable independent seeds, not Python's process-randomized hash().
                 seed = int.from_bytes(hashlib.sha256(f"{params.seed}:{run_id}".encode()).digest()[:8], "big")
