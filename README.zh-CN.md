@@ -12,17 +12,17 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-实验仅有 openai、python-dotenv、pandas、openpyxl 四项直接依赖，已移除 Mesa、CAMEL、MCP。已有虚拟环境中的旧包不会被自动卸载；希望环境也精简时请使用新虚拟环境。requirements-experiment-lock.txt 是当前实验依赖闭包，共 26 包；requirements.txt / requirements-lock.txt 包含分析依赖，共 40 包，均不是历史实验环境的还原。
+实验仅有 openai、python-dotenv、pandas、openpyxl 四项直接依赖，已移除 Mesa、CAMEL、MCP。已有虚拟环境中的旧包不会被自动卸载；希望环境也精简时请使用新虚拟环境。当前仓库保留两份依赖清单：requirements-experiment.txt 用于在线实验，requirements-offline.txt 用于人类工作簿分析；完整 Origin 绘图环境需另行准备。
 
 复制 .env.example 为 .env，填写 DEEPSEEK_API_KEY；已有 .env 保持不变。模型名现在由 JSON 配置控制，旧 DEEPSEEK_MODEL 环境变量不再控制模型。
 
 ```powershell
 # 只检查配置，不请求 API，也不生成结果
-.\.venv\Scripts\python.exe -m src.experiment.run_main --dry-run
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/smoke.json --dry-run
 # 离线模拟，输出明确标记为 MOCK
-.\.venv\Scripts\python.exe -m src.experiment.run_main --mock
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/smoke.json --mock
 # 真实实验，使用账户额度
-.\.venv\Scripts\python.exe -m src.experiment.run_main
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/bdi.json
 ```
 
 也支持直接执行 src/experiment/run_main.py。
@@ -32,6 +32,21 @@ python -m venv .venv
 默认 max_tokens=2048，为 BDI 和最终金额字典留出空间；configs/smoke.json 关闭 BDI，仍使用 512。max_tokens 是输出上限，开启 thinking 时推理输出也计入，应另行调大；context_limit=131072 是单独的本地输入加输出上限。保留最近 3 个完整轮次问答，加上当前轮已有消息和始终保留的系统提示；完整对话归档不会删掉。新实验可设置 history_rounds=null 使用完整历史，不自动摘要。
 
 DeepSeek 请求通过 extra_body 设置 thinking.type=disabled；配置 thinking=true 可开启，llm.py 中有注释。其他 OpenAI 兼容供应商可以配置 api_base_url、api_key_env、model_type_list、extra_body；非 DeepSeek 模型不会自动收到 DeepSeek 专属开关。API Key 只放 .env／环境变量。
+
+## 当前目录与入口
+
+| 路径 | 用途 |
+| --- | --- |
+| [src/experiment](src/experiment) | 实验入口、智能体、模型调用、金额解析、检查点与离线审计 |
+| [src/prompts/all_prompts.json](src/prompts/all_prompts.json) | 实验引擎实际加载的提示词 |
+| [configs](configs) | 小规模 smoke、49 人 BDI 实验与论文规模配置 |
+| [src/analysis](src/analysis) | 工作簿分析、人类数据缓存、成对导出与 Fig.2–7 绘图主体 |
+| [human_experiment_datas](human_experiment_datas) | 人类实验工作簿与缓存说明 |
+| [docs](docs) | 规则核对、离线指标说明与历史验证记录 |
+| outputs/ | 新实验、审计、图表输出，默认不进入 Git |
+| src/outputs/ | 保留的历史输入数据 |
+
+提示词在导入 src.experiment.model 时读取。修改 all_prompts.json 后，需要保存文件、重启 Python 进程并创建新实验；运行中的进程和历史 dialogue.json 不会自动更新。人格与网格位置按智能体 ID 固定对应，free/constrained 身份由各次实验的派生种子随机分配。
 
 ## 暂停、恢复和日志
 
@@ -65,7 +80,7 @@ DeepSeek 请求通过 extra_body 设置 thinking.type=disabled；配置 thinking
 
 BDI 金额解析支持实际数字 ID、`11_ID`、`N11_ID`，以及完整的 `N1_ID` 至 `N4_ID` 顺序占位键；系统提示改为展示每位玩家的真实邻居 ID。也支持最终决策中明确的逐邻居列表、等额发送和总返还声明，不从 Belief／Desire 或假设方案推断金额。dialogue.json 和 events.jsonl 增加 parse_method，区分字典、明确文字决策与解析失败。
 
-2026-10-13 批次的全量解析审计及历史数据限制见 [BDI 修复记录](docs/bdi-parser-audit-20261014.md)。复跑同规模新实验可使用 configs/bdi.json；修改解析器前的历史检查点不能与新代码混合恢复。
+49 人、20 轮、五个比例的 BDI 实验使用 [configs/bdi.json](configs/bdi.json)。修改解析器前的历史检查点不能与新代码混合恢复。错误金额若已影响后续互动，需要从第一轮重新实验，不能仅修改旧 CSV 视为修复了整场实验。
 
 离线审计不会调用 API、覆盖 CSV 或重写历史对话：
 
@@ -81,7 +96,6 @@ configs/smoke.json 对应小实验。configs/paper.json 使用人类实验规模
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/paper.json --dry-run
-.\.venv\Scripts\python.exe -m unittest discover -s test -p test_experiment.py -v
 ```
 
 保留现有英文人物设定和 3 轮记忆窗口属于 LLM 实验设计，与真人样本、金钱激励、原中文界面及自由记忆不同。原文明确用“点玩家／边玩家”避免 framing，而现有提示采用 constrained/free。paper.json 对齐规模不等于保证复现人类行为；也不实现论文另行拟合经验转移概率的数值模型。[详细边界与来源](docs/trust-game-protocol.md)。
@@ -103,3 +117,33 @@ configs/smoke.json 对应小实验。configs/paper.json 使用人类实验规模
 ```
 
 论文发布前仍需核实原始数据出处、使用条件和许可证，并固定代码、提示词、模型与配置版本。历史数据保持在 src/outputs/，新结果在 outputs/。
+
+## 图表分析与人类数据缓存
+
+绘图主体和数据准备逻辑保留在 src/analysis。缓存来源、表格和哈希核验规则见 [人类数据说明](human_experiment_datas/README.md)。
+
+| 脚本 | 用途 |
+| --- | --- |
+| [human_data_cache.py](src/analysis/human_data_cache.py) | 人类逐人逐轮数据与 20／50 轮窗口缓存 |
+| [fig3.py](src/analysis/fig3.py) | 前 20 轮个体委托与返还金额分布 |
+| [fig4.py](src/analysis/fig4.py) | 逐轮金额均值与个体标准差 |
+| [fig5.py](src/analysis/fig5.py) | 财富与 Gini 分析 |
+| [fig6.py](src/analysis/fig6.py) | 行为特征与表型聚类 |
+| [fig2.py](src/analysis/fig2.py)、[fig7.py](src/analysis/fig7.py) | 保留绘图主体，独立数据准备模块未包含在当前仓库中 |
+
+准备缓存或查看各入口参数：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-offline.txt
+.\.venv\Scripts\python.exe -m src.analysis.human_data_cache --human "human_experiment_datas/2024_NHB_model_Trust Game.xlsx"
+.\.venv\Scripts\python.exe -m src.analysis.fig3 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig4 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig5 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig6 --help
+```
+
+Fig.3 数据准备额外使用 scipy，Fig.6 聚类使用 scikit-learn。生成原生 Origin 图需要 Windows、本机可调用的 Origin 和已安装 originpro 的兼容 Python 环境；两份 requirements 文件不覆盖完整绘图环境。Fig.3–6 区分 prepare、render、all，可用 --origin-python 指定绘图解释器。Fig.2 仍导入已移除的 fig2_prepare，不能作为当前仓库中的独立可运行入口；Fig.7 需要已有汇总数据，其单独准备脚本未包含在仓库中。
+
+## 开发检查
+
+test/test_experiment.py 保留实验回归检查，但其中依赖的历史 BDI 样本 test/fixtures/bdi_decisions_20261013.json 未包含在当前精简仓库中，完整测试需要补齐该文件。test/test_exp.py 是带固定数据路径假设的历史处理脚本。当前入口检查可使用前述 --dry-run 和 smoke 离线模拟。

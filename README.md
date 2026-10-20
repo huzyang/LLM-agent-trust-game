@@ -17,21 +17,31 @@ python -m venv .venv
 The online experiment needs only four direct packages: openai, python-dotenv, pandas and openpyxl. Mesa, CAMEL and MCP are no longer required. This does not uninstall packages from an existing environment; use a fresh virtual environment for the reduced dependency set.
 
 - `requirements-experiment.txt`: minimal experiment dependencies.
-- `requirements-experiment-lock.txt`: their 26-package dependency closure inspected on Python 3.12.4 / Windows.
 - `requirements-offline.txt`: supplied workbook analysis only.
-- `requirements-analysis.txt`: offline plus legacy plotting tools.
-- `requirements.txt` / `requirements-lock.txt`: combined experiment and analysis environment (40 resolved packages).
 
-On Linux/macOS use `python3.12 -m venv .venv`, `source .venv/bin/activate`, then `python -m pip install ...`. Lock files describe the current environment, not the historical experiments.
+On Linux/macOS use `python3.12 -m venv .venv`, `source .venv/bin/activate`, then `python -m pip install ...`. Figure-specific dependencies are described below; the offline requirements file does not cover every figure workflow.
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| [src/experiment](src/experiment) | Experiment runner, agents, LLM adapter, decision parser, checkpoints and offline decision audit |
+| [src/prompts/all_prompts.json](src/prompts/all_prompts.json) | Prompts loaded by the experiment engine |
+| [configs](configs) | Smoke test, BDI experiment and paper-size settings |
+| [src/analysis](src/analysis) | Workbook analysis, reusable human-data cache, pair exports and Fig. 2–7 scripts |
+| [human_experiment_datas](human_experiment_datas) | Human trust-game workbook and cache documentation |
+| [docs](docs) | Game protocol, offline metric definitions and historical verification notes |
+| outputs/ | Generated experiments, audits and figures; ignored by Git |
+| src/outputs/ | Retained historical inputs |
 
 ## Default experiment
 
 Copy `.env.example` to `.env` and enter your own `DEEPSEEK_API_KEY`. Existing `.env` files are preserved. Model names now come from configuration, not the historical `DEEPSEEK_MODEL` variable.
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.experiment.run_main --dry-run
-.\.venv\Scripts\python.exe -m src.experiment.run_main --mock
-.\.venv\Scripts\python.exe -m src.experiment.run_main
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/smoke.json --dry-run
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/smoke.json --mock
+.\.venv\Scripts\python.exe -m src.experiment.run_main --config configs/bdi.json
 ```
 
 The first command validates without API calls or output files. The second generates explicitly labelled offline MOCK data. The third makes real API requests and consumes account credit. Direct invocation of `python src/experiment/run_main.py` is also supported.
@@ -46,13 +56,15 @@ The first command validates without API calls or output files. The second genera
 | Base seed | 42; independent derived seed for each run |
 | Output / local context budget | 2,048 tokens / 131,072 |
 | Request timeout / retries | 60 seconds / 2 retries after initial attempt |
-| Calls before retries | 18 |
+| Calls before retries | 9,800 |
 
 Role counts use floor(N×p). The current default plans 9,800 calls. Use configs/smoke.json for 9 players, one round, p=0.5, BDI disabled and 18 calls. Both requested and actual proportions are logged. Seeds reproduce role assignment, not remote model responses.
 
 Default thinking is explicitly disabled with DeepSeek's `extra_body={"thinking":{"type":"disabled"}}`. Set `"thinking": true` in JSON to enable it; the corresponding comment is in `src/experiment/llm.py`. For other OpenAI-compatible providers configure `api_base_url`, `api_key_env`, `model_type_list` and provider-specific `extra_body`. Put credentials in environment variables, never JSON.
 
-BDI prompts now use actual neighbor IDs and brief explanations. The parser accepts ID aliases and explicit final action statements. Truncated or otherwise incomplete responses are archived and pause before any action is executed; increase max_tokens via a resume config to retry that pending call. max_tokens includes reasoning output when thinking is enabled. See the [BDI audit and repair](docs/bdi-parser-audit-20261014.md); configs/bdi.json reproduces the 49-player, 20-round, five-fraction setup with the repaired parser and a 2,048 output cap.
+BDI prompts use actual neighbor IDs and brief explanations. The parser accepts ID aliases and explicit final action statements. Truncated or otherwise incomplete responses are archived and pause before any action is executed; increase max_tokens via a resume config to retry that pending call. max_tokens includes reasoning output when thinking is enabled. [configs/bdi.json](configs/bdi.json) specifies the 49-player, 20-round, five-fraction setup with a 2,048 output cap.
+
+Prompts are loaded when `src.experiment.model` is imported. After editing all_prompts.json, save it and start a new Python process and experiment. An already running process or archived dialogue does not automatically adopt file changes. Personas and grid positions follow agent IDs; free/constrained roles are shuffled using each run's derived seed.
 
 ## Resume and logs
 
@@ -112,16 +124,42 @@ The supplied workbook has 15 experimental sheets: five treatments × three sessi
 
 This is a descriptive analysis route, not certification of exact paper figure/statistical reproduction. See [offline-analysis.md](docs/offline-analysis.md).
 
-## Tests and pair exports
+## Figures and reusable human data
+
+The figure scripts use the workbook and LLM exports as inputs. [Human-data documentation](human_experiment_datas/README.md) describes the reusable, hash-validated cache.
+
+| Script | Scope |
+| --- | --- |
+| [human_data_cache.py](src/analysis/human_data_cache.py) | Prepare reusable human records and 20-/50-round tables |
+| [fig3.py](src/analysis/fig3.py) | Individual entrusted/returned amount distributions, first 20 rounds |
+| [fig4.py](src/analysis/fig4.py) | Round-wise amount means and individual standard deviations |
+| [fig5.py](src/analysis/fig5.py) | Wealth and Gini analysis |
+| [fig6.py](src/analysis/fig6.py) | Behavioral features and phenotype clustering |
+| [fig2.py](src/analysis/fig2.py), [fig7.py](src/analysis/fig7.py) | Retained figure scripts; their separate preparation modules are not included |
+
+Prepare the human cache or inspect figure-specific options:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s test -p test_experiment.py -v
-.\.venv\Scripts\python.exe -m src.analysis.pair_data_analysy --input "outputs/your_experiment/pair_data.xlsx" --output outputs/pair_plot_data.xlsx
+.\.venv\Scripts\python.exe -m pip install -r requirements-offline.txt
+.\.venv\Scripts\python.exe -m src.analysis.human_data_cache --human "human_experiment_datas/2024_NHB_model_Trust Game.xlsx"
+.\.venv\Scripts\python.exe -m src.analysis.fig3 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig4 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig5 --help
+.\.venv\Scripts\python.exe -m src.analysis.fig6 --help
 ```
 
-Regression checks cover paper payoff, grid/seed reproducibility, legal amounts, history windows, mid-stage and boundary recovery, context pauses, API retry policy, thinking controls, mock/export and imports without Mesa/CAMEL/MCP. Equal-amount transactions are retained.
+Fig. 3 preparation additionally uses scipy; Fig. 6 clustering uses scikit-learn. Native Origin rendering requires Windows, a callable local Origin installation and a compatible Python environment with originpro. Preparation and rendering are separate commands (`prepare`, `render`, `all`); rendering can use `--origin-python`. The two requirements files do not install the complete Origin environment. Fig. 2 imports the removed fig2_prepare module; Fig. 7 expects previously prepared summaries, and its separate preparation script is not included.
 
-`test/test_exp.py` and `src/experiment/average_3_trust_game_runs.py` are historical data-processing routines with dataset/path assumptions; they are not the regression suite. Player IDs and role assignments must not be treated as the same subject across independent sessions.
+## Pair exports and development checks
+
+```powershell
+.\.venv\Scripts\python.exe -m src.analysis.pair_data_analysy --input "outputs/your_experiment/pair_data.xlsx" --output outputs/pair_plot_data.xlsx
+.\.venv\Scripts\python.exe -m src.experiment.audit_decisions --input "outputs/your_experiment" --output-dir outputs/new_decision_audit
+```
+
+Pair exports retain equal-amount transactions. The offline decision audit compares raw answers and executed amounts, writes a new report directory and does not overwrite historical experiments or call the API. Errors that influenced subsequent interactions require a new experiment, rather than simply rewriting the old CSV.
+
+`test/test_experiment.py` contains development regression checks, but its archived BDI sample file (`test/fixtures/bdi_decisions_20261013.json`) is not included in this trimmed repository; the complete suite requires that fixture. `test/test_exp.py` is a historical data-processing routine with dataset/path assumptions. Use `--dry-run` and the smoke configuration for the documented entry-point checks. Player IDs must not be treated as the same human subject across independent sessions.
 
 ## Publication and reuse
 
