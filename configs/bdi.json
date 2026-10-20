@@ -5,7 +5,7 @@
   "iterations": 1,
   "report_bdi": true,
   "total_round_info": false,
-  "model_type_list": ["deepseek-flash"],
+  "model_type_list": ["deepseek-v4-pro"],
   "max_tokens": 2048,
   "thinking": false,
   "history_rounds": 3,

@@ -25,7 +25,7 @@ class GameScenario:
     width: int = 3
     height: int = 3
     torus: bool = True
-    model_type: str = "deepseek-flash"
+    model_type: str = "deepseek-v4-pro"
     game_type: str = "trust_game"
     proportion: float = 0.5
     run_id: int = 1
@@ -42,7 +42,7 @@ class Params:
         self.rounds = 20
         self.iterations = 1
         self.game_type = "trust_game"
-        self.model_type_list = ["deepseek-flash"]
+        self.model_type_list = ["deepseek-v4-pro"]
         self.report_bdi = True
         self.total_round_info = False
         self.seed = 42

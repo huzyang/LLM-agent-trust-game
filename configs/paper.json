@@ -6,7 +6,7 @@
   "report_bdi": false,
   "total_round_info": false,
   "temperature": 1.0,
-  "model_type_list": ["deepseek-flash"],
+  "model_type_list": ["deepseek-v4-pro"],
   "max_tokens": 512,
   "context_limit": 131072,
   "thinking": false,
